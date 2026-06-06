@@ -39,7 +39,7 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install dependencies
-        run: pip install duckrun pyyaml ms-fabric-cli
+        run: pip install duckrun "deltalake<1.5.1" pyyaml ms-fabric-cli
 
       - name: 🦆 Install DuckDB azure extension
         run: |

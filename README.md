@@ -68,7 +68,7 @@ hasn't loaded yet and inserts them idempotently, keyed on the filename:
 | Strategy | Behavior | Used by |
 |----------|----------|---------|
 | `insert` | Insert only new keys (idempotent) | fact models (keyed on `file`), `stg_csv_archive_log` |
-| `append` | Append intraday rows; **overwrite** only when a new **daily** file lands (`config(full_refresh=has_new_daily)` → duckrun writes the Delta table fresh) | `fct_summary` |
+| `insert` + overwrite | Intraday: insert new `(date,time,DUID)` rows (dup-safe, never updates); **overwrite** the whole table when a new **daily** file lands (`config(full_refresh=has_new_daily)`) | `fct_summary` |
 | `merge` | Upsert — update matched, insert new | `dim_duid` (attributes change; key `DUID`) |
 | `append` (one-off) | Built once; later runs select nothing (`WHERE 1=0`) → no-op | `dim_calendar` (fixed, generated) |
 

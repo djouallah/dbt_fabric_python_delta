@@ -21,7 +21,8 @@ SELECT
 
 {{ config(
     materialized='incremental',
-    incremental_strategy='append',
+    incremental_strategy='insert',
+    unique_key=['date', 'time', 'DUID'],
     full_refresh=has_new_daily,
     schema='mart'
 ) }}

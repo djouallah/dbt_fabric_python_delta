@@ -98,8 +98,9 @@ virtualization.
   `merge` (a dimension whose attributes change; source is unique on `DUID`).
   `dim_calendar` is a one-off: `incremental`/`append` with `{% if is_incremental() %}WHERE 1=0{% endif %}`,
   so it builds in full on the first run and is a no-op afterward (dbt's "create if not exists, else skip").
-  `fct_summary` keeps its original incremental design: `append` intraday rows each run,
-  and **overwrite** only when a new **daily** file arrives. The overwrite is duckrun-native:
+  `fct_summary` uses `incremental_strategy='insert'` on `['date','time','DUID']` (dup-safe,
+  insert-only — never blind `append`, never updates a key) for intraday rows, and
+  **overwrite** when a new **daily** file arrives. The overwrite is duckrun-native:
   the model computes `has_new_daily` (before `config`) and sets `config(full_refresh=has_new_daily)`,
   so `_delta_core.sql` passes `full_refresh` to the delta-write plugin which rewrites the
   table fresh. duckrun has NO `overwrite` incremental strategy — overwrite IS `full_refresh`.
