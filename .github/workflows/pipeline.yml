@@ -41,15 +41,6 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install duckrun "deltalake<1.5.1" pyyaml ms-fabric-cli
 
-      - name: 🦆 Install DuckDB azure extension
-        run: |
-          python - <<'EOF'
-          import duckdb
-          c = duckdb.connect(':memory:')
-          c.execute("INSTALL azure")
-          print("  ✓ azure")
-          EOF
-
       - name: 🔐 Azure federated login
         uses: azure/login@v2
         with:
