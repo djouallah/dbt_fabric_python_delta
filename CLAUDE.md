@@ -87,7 +87,7 @@ virtualization.
 
 - **Adapter wiring** lives in `dbt/profiles.yml`: `type: duckrun`, with
   `root_path: {{ env_var('ONELAKE_TABLES_PATH') }}` and `storage_options.bearer_token`.
-  `ONELAKE_TABLES_PATH` = `abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}.Lakehouse/Tables`.
+  `ONELAKE_TABLES_PATH` = `abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables`.
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).
 - **Incremental strategies** are real Delta operations: `merge` (upsert, needs

@@ -92,7 +92,7 @@ jobs:
           print(f"process_limit={e.get('ci_process_limit', e.get('process_limit', '100'))}")
           EOF
           {
-            echo "ONELAKE_TABLES_PATH=abfss://$WS_ID@onelake.dfs.fabric.microsoft.com/$LH_ID.Lakehouse/Tables"
+            echo "ONELAKE_TABLES_PATH=abfss://$WS_ID@onelake.dfs.fabric.microsoft.com/$LH_ID/Tables"
             echo "FILES_PATH=abfss://$WS_ID@onelake.dfs.fabric.microsoft.com/$LH_ID/Files"
             echo "WS_ID=$WS_ID"
             echo "WS_NAME=$WS_NAME"
