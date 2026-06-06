@@ -1,0 +1,11 @@
+aemo_electricity:
+  target: dev
+  outputs:
+    dev:
+      type: duckrun
+      schema: "{{ env_var('DBT_SCHEMA', 'mart') }}"
+      root_path: "{{ env_var('ONELAKE_TABLES_PATH') }}"
+      storage_options:
+        bearer_token: "{{ env_var('ONELAKE_TOKEN') }}"
+      settings:
+        preserve_insertion_order: false
