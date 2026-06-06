@@ -1,7 +1,7 @@
 def model(dbt, session):
     dbt.config(
         materialized="incremental",
-        incremental_strategy="merge",
+        incremental_strategy="insert",
         unique_key=["source_type", "source_filename"],
         schema="landing",
     )

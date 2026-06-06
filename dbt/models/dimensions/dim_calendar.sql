@@ -1,9 +1,11 @@
 {{ config(
     materialized='incremental',
-    unique_key='date',
-    incremental_strategy='merge'
+    incremental_strategy='append'
 ) }}
 
+-- One-off, fixed calendar dimension. Built in full on the first run; once the table
+-- exists, every later run selects nothing (WHERE 1=0) so it's a no-op — dbt's idiom
+-- for "create if not exists, otherwise skip".
 SELECT
   CAST(date AS DATE) as date,
   CAST(EXTRACT(year FROM date) AS INT) as year,
@@ -16,5 +18,5 @@ FROM (
   )) as date
 )
 {% if is_incremental() %}
-WHERE date NOT IN (SELECT date FROM {{ this }})
+WHERE 1 = 0
 {% endif %}

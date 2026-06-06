@@ -62,16 +62,18 @@ The adapter auto-creates a matching DuckDB Azure secret from the bearer token, e
 
 ### Incremental strategies
 
-Delta supports real upserts, so every incremental model uses `merge`:
+The pipeline is **file-level incremental** — each fact model reads only files it
+hasn't loaded yet and inserts them idempotently, keyed on the filename:
 
-| Strategy | Behavior | Requires |
-|----------|----------|----------|
-| `merge` | Upsert — update matched rows, insert new | `unique_key` |
-| `insert` | Insert only new keys (idempotent) | `unique_key` |
-| `append` | Blind append | — |
+| Strategy | Behavior | Used by |
+|----------|----------|---------|
+| `insert` | Insert only new keys (idempotent) | fact models (keyed on `file`), `stg_csv_archive_log` |
+| `append` | Append intraday rows; **overwrite** only when a new **daily** file lands (`config(full_refresh=has_new_daily)` → duckrun writes the Delta table fresh) | `fct_summary` |
+| `merge` | Upsert — update matched, insert new | `dim_duid` (attributes change; key `DUID`) |
+| `append` (one-off) | Built once; later runs select nothing (`WHERE 1=0`) → no-op | `dim_calendar` (fixed, generated) |
 
 ```sql
-{{ config(materialized='incremental', incremental_strategy='merge', unique_key='date') }}
+{{ config(materialized='incremental', incremental_strategy='insert', unique_key='file') }}
 ```
 
 ## Schema layout
@@ -174,6 +176,8 @@ deploys to Fabric.
 - **Emit `timestamptz`, not `timestamp`.** Naive `TIMESTAMP` maps to Delta `timestamp_ntz`,
   which Microsoft docs flag as "not fully supported across Fabric workloads."
   `CAST(... AS TIMESTAMPTZ)` at output columns.
-- **Use `merge` for incrementals.** Delta supports MERGE/DELETE natively, so models
-  upsert by `unique_key` — no append-only workarounds, no DELETE pre_hook hacks.
+- **Insert by filename.** Facts are loaded one file at a time and never reprocessed, so
+  `incremental_strategy='insert'` keyed on `file` is the right idempotent fit — not a
+  grain-level `merge`. Reserve `merge` for dimensions whose attributes actually change
+  (`dim_duid`), and a plain `table` for fixed generated ones (`dim_calendar`).
 - **Delta maintenance is on you.** Compaction (`OPTIMIZE`) and `VACUUM` via delta-rs.

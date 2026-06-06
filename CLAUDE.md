@@ -91,8 +91,21 @@ virtualization.
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).
 - **Incremental strategies** are real Delta operations: `merge` (upsert, needs
-  `unique_key`), `insert` (idempotent append of new keys), `append`. We use `merge`
-  for every incremental model — Delta supports MERGE/DELETE, unlike the old Iceberg path.
+  `unique_key`), `insert` (idempotent append of new keys), `append`. This pipeline is
+  **file-level incremental**: each fact model reads only files not already loaded
+  (`... NOT IN (SELECT file FROM {{ this }})`) and writes with `incremental_strategy='insert'`
+  keyed on the **filename** — idempotent, re-running a file is a no-op. `dim_duid` uses
+  `merge` (a dimension whose attributes change; source is unique on `DUID`).
+  `dim_calendar` is a one-off: `incremental`/`append` with `{% if is_incremental() %}WHERE 1=0{% endif %}`,
+  so it builds in full on the first run and is a no-op afterward (dbt's "create if not exists, else skip").
+  `fct_summary` keeps its original incremental design: `append` intraday rows each run,
+  and **overwrite** only when a new **daily** file arrives. The overwrite is duckrun-native:
+  the model computes `has_new_daily` (before `config`) and sets `config(full_refresh=has_new_daily)`,
+  so `_delta_core.sql` passes `full_refresh` to the delta-write plugin which rewrites the
+  table fresh. duckrun has NO `overwrite` incremental strategy — overwrite IS `full_refresh`.
+  Do NOT use a `DELETE FROM`/`TRUNCATE` pre_hook (`{{ this }}` is a `delta_scan` view, not
+  writable), and do NOT switch to `materialized='table'` (that overwrites every run and
+  loses the intraday-append optimization).
 - **No DuckDB version pin** and no `force install iceberg/avro from core_nightly`.
   Only the `azure` extension is needed (for abfss CSV reads); duckrun bundles
   `dbt-duckdb` + `deltalake` and auto-creates the DuckDB Azure secret from the token.

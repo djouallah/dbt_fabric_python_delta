@@ -1,10 +1,28 @@
 -- depends_on: {{ ref('fct_scada_today') }}
 -- depends_on: {{ ref('fct_price_today') }}
 
+{#-- Decide overwrite-vs-append BEFORE config: if new daily (authoritative) data has
+     arrived, full_refresh=true makes duckrun OVERWRITE the Delta table (delta-rs write
+     mode 'overwrite'); otherwise the run appends intraday rows. Replaces the old Iceberg
+     TRUNCATE pre_hook — duckrun has no overwrite strategy, overwrite IS full_refresh. --#}
+{%- set has_new_daily_query -%}
+SELECT
+  (SELECT COUNT(DISTINCT DATE) FROM {{ ref('fct_scada') }} WHERE INTERVENTION = 0) as scada_days,
+  (SELECT COUNT(DISTINCT date) FROM {{ this }}) as summary_days
+{%- endset -%}
+
+{%- set _summary_exists = load_relation(this) -%}
+{%- if execute and flags.WHICH == 'run' and _summary_exists is not none -%}
+  {%- set result = run_query(has_new_daily_query) -%}
+  {%- set has_new_daily = result and result.rows[0][0] > result.rows[0][1] -%}
+{%- else -%}
+  {%- set has_new_daily = true -%}
+{%- endif -%}
+
 {{ config(
     materialized='incremental',
-    incremental_strategy='merge',
-    unique_key=['date', 'time', 'DUID'],
+    incremental_strategy='append',
+    full_refresh=has_new_daily,
     schema='mart'
 ) }}
 
