@@ -19,6 +19,10 @@ SELECT
   {%- set has_new_daily = true -%}
 {%- endif -%}
 
+{%- if execute and flags.WHICH == 'run' -%}
+  {{ log("fct_summary[pre-config]: has_new_daily=" ~ has_new_daily ~ " exists=" ~ (_summary_exists is not none) ~ " execute=" ~ execute ~ " which=" ~ flags.WHICH, info=true) }}
+{%- endif -%}
+
 {{ config(
     materialized='incremental',
     incremental_strategy='insert',
@@ -38,6 +42,7 @@ SELECT
 {%- if execute and flags.WHICH == 'run' -%}
   {%- set result = run_query(has_new_daily_query) -%}
   {%- set has_new_daily = result and result.rows[0][0] > result.rows[0][1] -%}
+  {{ log("fct_summary[is_incremental]: has_new_daily=" ~ has_new_daily ~ " scada_days=" ~ (result.rows[0][0] if result else 'NULL') ~ " summary_days=" ~ (result.rows[0][1] if result else 'NULL'), info=true) }}
 {%- else -%}
   {%- set has_new_daily = true -%}
 {%- endif -%}
