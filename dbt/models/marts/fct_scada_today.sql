@@ -12,6 +12,24 @@
 
 {% set csv_archive_path = get_csv_archive_path() %}
 
+{#-- Skip the file read entirely when no new scada_today files have arrived: otherwise the
+     pre_hook's COALESCE(..., ['']) sentinel makes read_csv('') run against an empty path. --#}
+{%- set check_files_query -%}
+SELECT COUNT(*) as cnt FROM {{ ref('stg_csv_archive_log') }}
+WHERE source_type = 'scada_today'
+{%- if is_incremental() %}
+AND csv_filename NOT IN (SELECT DISTINCT file FROM {{ this }})
+{%- endif -%}
+{%- endset -%}
+
+{%- if execute and flags.WHICH == 'run' -%}
+  {%- set files_result = run_query(check_files_query) -%}
+  {%- set has_files = files_result and files_result.rows[0][0] > 0 -%}
+{%- else -%}
+  {%- set has_files = true -%}
+{%- endif -%}
+
+{% if has_files %}
 WITH scada_staging AS (
   SELECT *
   FROM read_csv(
@@ -47,3 +65,6 @@ SELECT
   CAST(SETTLEMENTDATE AS DATE) AS DATE,
   CAST(YEAR(SETTLEMENTDATE) AS INT) AS YEAR
 FROM scada_staging
+{% else %}
+SELECT * FROM {{ this }} WHERE FALSE
+{% endif %}
