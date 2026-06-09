@@ -20,7 +20,7 @@ SELECT
 {%- endif -%}
 
 {%- if execute and flags.WHICH == 'run' -%}
-  {{ log("fct_summary[pre-config]: has_new_daily=" ~ has_new_daily ~ " exists=" ~ (_summary_exists is not none) ~ " execute=" ~ execute ~ " which=" ~ flags.WHICH, info=true) }}
+  {{ log("fct_summary[pre-config]: has_new_daily=" ~ has_new_daily ~ " exists=" ~ (_summary_exists is not none) ~ " rel_type=" ~ (_summary_exists.type if _summary_exists is not none else 'NONE') ~ " is_incremental=" ~ is_incremental() ~ " should_full_refresh=" ~ should_full_refresh() ~ " which=" ~ flags.WHICH, info=true) }}
 {%- endif -%}
 
 {{ config(
