@@ -1,86 +1,23 @@
 -- depends_on: {{ ref('fct_scada_today') }}
 -- depends_on: {{ ref('fct_price_today') }}
 
-{#-- Decide overwrite-vs-append BEFORE config: if new daily (authoritative) data has
-     arrived, full_refresh=true makes duckrun OVERWRITE the Delta table (delta-rs write
-     mode 'overwrite'); otherwise the run appends intraday rows. Replaces the old Iceberg
-     TRUNCATE pre_hook — duckrun has no overwrite strategy, overwrite IS full_refresh. --#}
-{%- set has_new_daily_query -%}
-SELECT
-  (SELECT COUNT(DISTINCT DATE) FROM {{ ref('fct_scada') }} WHERE INTERVENTION = 0) as scada_days,
-  (SELECT COUNT(DISTINCT date) FROM {{ this }}) as summary_days
-{%- endset -%}
-
-{%- set _summary_exists = load_relation(this) -%}
-{%- if execute and flags.WHICH == 'run' and _summary_exists is not none -%}
-  {%- set result = run_query(has_new_daily_query) -%}
-  {%- set has_new_daily = result and result.rows[0][0] > result.rows[0][1] -%}
-{%- else -%}
-  {%- set has_new_daily = true -%}
-{%- endif -%}
-
-{%- if execute and flags.WHICH == 'run' -%}
-  {{ log("fct_summary[pre-config]: has_new_daily=" ~ has_new_daily ~ " exists=" ~ (_summary_exists is not none) ~ " rel_type=" ~ (_summary_exists.type if _summary_exists is not none else 'NONE') ~ " is_incremental=" ~ is_incremental() ~ " should_full_refresh=" ~ should_full_refresh() ~ " which=" ~ flags.WHICH, info=true) }}
-{%- endif -%}
-
+{#-- Overwrite-vs-append is decided by the RUNNER, not the model: `full_refresh` is fixed at
+     parse time (execute=False) and can't be toggled from a run-time probe, so the old
+     has_new_daily/config(full_refresh=...) trick was always pinned to overwrite. Instead the
+     runner (notebook + CI) checks the `check_new_daily` run-operation and reruns this model
+     with `--full-refresh` only when a new daily file landed (-> is_incremental() false ->
+     full rebuild from daily, duckrun overwrites); a plain run appends today's intraday
+     (-> is_incremental() true). --#}
 {{ config(
     materialized='incremental',
     incremental_strategy='insert',
     unique_key=['date', 'time', 'DUID'],
-    full_refresh=has_new_daily,
     schema='mart'
 ) }}
 
 {% if is_incremental() %}
 
-{%- set has_new_daily_query -%}
-SELECT
-  (SELECT COUNT(DISTINCT DATE) FROM {{ ref('fct_scada') }} WHERE INTERVENTION = 0) as scada_days,
-  (SELECT COUNT(DISTINCT date) FROM {{ this }}) as summary_days
-{%- endset -%}
-
-{%- if execute and flags.WHICH == 'run' -%}
-  {%- set result = run_query(has_new_daily_query) -%}
-  {%- set has_new_daily = result and result.rows[0][0] > result.rows[0][1] -%}
-  {{ log("fct_summary[is_incremental]: has_new_daily=" ~ has_new_daily ~ " scada_days=" ~ (result.rows[0][0] if result else 'NULL') ~ " summary_days=" ~ (result.rows[0][1] if result else 'NULL'), info=true) }}
-{%- else -%}
-  {%- set has_new_daily = true -%}
-{%- endif -%}
-
-{% if has_new_daily %}
-
--- New daily data found: full rebuild from daily
-WITH daily_summary AS (
-  SELECT
-    s.DATE as date,
-    CAST(strftime(s.SETTLEMENTDATE, '%H%M') AS INT) as time,
-    (SELECT MAX(CAST(SETTLEMENTDATE AS TIMESTAMPTZ)) FROM {{ ref('fct_scada') }}) as cutoff,
-    s.DUID,
-    MAX(s.INITIALMW) as mw,
-    MAX(p.RRP) as price
-  FROM {{ ref('fct_scada') }} s
-  LEFT JOIN {{ ref('dim_duid') }} d ON s.DUID = d.DUID
-  LEFT JOIN {{ ref('fct_price') }} p
-    ON s.SETTLEMENTDATE = p.SETTLEMENTDATE AND d.Region = p.REGIONID
-  WHERE
-    s.INTERVENTION = 0
-    AND s.INITIALMW <> 0
-    AND p.INTERVENTION = 0
-  GROUP BY ALL
-)
-
-SELECT
-  date,
-  time,
-  DUID,
-  CAST(mw AS DECIMAL(18, 4)) AS mw,
-  CAST(price AS DECIMAL(18, 4)) AS price,
-  cutoff
-FROM daily_summary
-
-{% else %}
-
--- No new daily data: append intraday after cutoff
+-- Append intraday: today's rows after the last cutoff baked into the table.
 WITH max_cutoff AS (
   SELECT MAX(cutoff) as cutoff FROM {{ this }}
 ),
@@ -113,11 +50,10 @@ SELECT
   CAST(MAX(SETTLEMENTDATE) OVER () AS TIMESTAMPTZ) AS cutoff
 FROM incremental_data
 
-{% endif %}
-
 {% else %}
 
--- Full refresh from daily + today data
+-- Full rebuild (runs under --full-refresh -> overwrite): authoritative daily + today's
+-- intraday after the daily cutoff. The cutoff column is the watermark the append path reads.
 WITH daily_summary AS (
   SELECT
     s.DATE as date,
