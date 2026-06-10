@@ -11,6 +11,8 @@
        run-operation without the model-relation delta_scan views being registered. The
        duckrun connection already carries the Azure secret minted from ONELAKE_TOKEN. --#}
   {%- if execute -%}
+    {#-- run-operation skips on-run-start, so set the abfss transport here too (curl in CI). --#}
+    {%- do run_query("SET GLOBAL azure_transport_option_type = '" ~ env_var('AZURE_TRANSPORT_OPTION_TYPE', 'default') ~ "'") -%}
     {%- set log_path  = env_var('FILES_PATH') ~ '/csv_archive_log.parquet' -%}
     {%- set scada_tbl = env_var('ONELAKE_TABLES_PATH') ~ '/landing/fct_scada' -%}
     {%- set q -%}
