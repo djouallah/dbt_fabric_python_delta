@@ -201,13 +201,24 @@ print("=== 6. Deploy pipeline ===")
 fab_deploy(["DataPipeline"])
 
 # 6b. Set notebook reference on pipeline via fab set
+# The pipeline has multiple TridentNotebook activities (low-core run + high-core
+# retry on the Failed path), all carrying the same dev GUIDs — patch every one.
 print("=== 6b. Set notebook on pipeline ===")
-fab(["set", PIPELINE, "-q",
-     "definition.parts[0].payload.properties.activities[0].typeProperties.notebookId",
-     "-i", target_nb_id, "-f"])
-fab(["set", PIPELINE, "-q",
-     "definition.parts[0].payload.properties.activities[0].typeProperties.workspaceId",
-     "-i", WS_ID, "-f"])
+pl_def = subprocess.run(
+    ["fab", "get", PIPELINE, "-q",
+     "definition.parts[0].payload.properties.activities"],
+    capture_output=True, text=True, check=True, cwd=str(root),
+)
+activities = json.loads(pl_def.stdout)
+for i, act in enumerate(activities):
+    if act.get("type") != "TridentNotebook":
+        continue
+    fab(["set", PIPELINE, "-q",
+         f"definition.parts[0].payload.properties.activities[{i}].typeProperties.notebookId",
+         "-i", target_nb_id, "-f"])
+    fab(["set", PIPELINE, "-q",
+         f"definition.parts[0].payload.properties.activities[{i}].typeProperties.workspaceId",
+         "-i", WS_ID, "-f"])
 
 # Reconcile to EXACTLY ONE schedule on the pipeline. Detection must be reliable
 # or schedules pile up: the old `fab job run-list <pl> --schedule` queries
