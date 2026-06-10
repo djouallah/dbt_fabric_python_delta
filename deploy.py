@@ -201,18 +201,12 @@ print("=== 6. Deploy pipeline ===")
 fab_deploy(["DataPipeline"])
 
 # 6b. Set notebook reference on pipeline via fab set
-# The pipeline has multiple TridentNotebook activities (low-core run + high-core
-# retry on the Failed path), all carrying the same dev GUIDs — patch every one.
+# The pipeline has two TridentNotebook activities (low-core run at [0] + high-core
+# retry on the Failed path at [1]), both carrying the same dev GUIDs — patch both.
+# Indices are fixed by pipeline-content.json; `fab get -q` can't navigate into the
+# encoded definition payload, so we set by known index (same path `fab set` accepts).
 print("=== 6b. Set notebook on pipeline ===")
-pl_def = subprocess.run(
-    ["fab", "get", PIPELINE, "-q",
-     "definition.parts[0].payload.properties.activities"],
-    capture_output=True, text=True, check=True, cwd=str(root),
-)
-activities = json.loads(pl_def.stdout)
-for i, act in enumerate(activities):
-    if act.get("type") != "TridentNotebook":
-        continue
+for i in (0, 1):
     fab(["set", PIPELINE, "-q",
          f"definition.parts[0].payload.properties.activities[{i}].typeProperties.notebookId",
          "-i", target_nb_id, "-f"])
