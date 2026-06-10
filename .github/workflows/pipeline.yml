@@ -96,25 +96,21 @@ jobs:
       - name: 🔨 Phase 2 — dbt run
         run: |
           T0=$(date +%s)
-          # CI is append-only: fct_summary's full-refresh rebuild doesn't fit a 14 GB runner
-          # (it only fits the 4-vCore notebook), so CI never passes --full-refresh. A plain
-          # `dbt run` appends intraday (fct_summary is incremental) and the fact tables
-          # self-skip via their has_files guard. The daily overwrite runs in the notebook.
-          snap() { cp dbt/target/run_results.json "/tmp/rr_$1.json" 2>/dev/null || true; }
-          rc=0; dbt run --target dev --project-dir dbt --profiles-dir dbt || rc=$?
-          snap 0
-          if [ $rc -ne 0 ]; then
-            echo "::warning::dbt run had failures — sleeping 60s and retrying (1/2)..."
-            sleep 60
-            rc=0; dbt retry --target dev --project-dir dbt --profiles-dir dbt || rc=$?
-            snap 1
-            if [ $rc -ne 0 ]; then
-              echo "::warning::retry 1 still failing — sleeping 90s and retrying (2/2)..."
-              sleep 90
-              dbt retry --target dev --project-dir dbt --profiles-dir dbt || true
-              snap 2
-            fi
-          fi
+          DBT="--target dev --project-dir dbt --profiles-dir dbt"
+          # Same flow as the Fabric notebook.
+          # 1. Download / refresh the archive log first.
+          dbt run --select stg_csv_archive_log $DBT
+          # 2. New daily pending? check_new_daily exits non-zero (raises) when yes —
+          #    checked BEFORE fct_scada ingests it. `if` keeps set -e from aborting here.
+          if dbt run-operation check_new_daily $DBT; then NEW_DAILY=0; else NEW_DAILY=1; fi
+          echo "new_daily=$NEW_DAILY"
+          # 3. Build everything except the summary (retry once on failure).
+          dbt run --exclude stg_csv_archive_log --exclude fct_summary $DBT \
+            || { echo "::warning::dbt run failed — retrying once..."; sleep 60; dbt retry $DBT; }
+          # 4. Summary: overwrite when a new daily landed, else append intraday.
+          FR=""; [ "$NEW_DAILY" = "1" ] && FR="--full-refresh"
+          dbt run --select fct_summary $FR $DBT
+          cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
       - name: ✅ Phase 3 — dbt test
