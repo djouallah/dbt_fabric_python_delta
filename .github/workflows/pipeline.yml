@@ -105,7 +105,11 @@ jobs:
           if dbt run-operation check_new_daily $DBT; then NEW_DAILY=0; else NEW_DAILY=1; fi
           echo "new_daily=$NEW_DAILY"
           # 3. Build everything except the summary (retry once on failure).
-          dbt run --exclude stg_csv_archive_log --exclude fct_summary $DBT \
+          #    No new daily landed -> the daily fct_price/fct_scada have nothing to do, so
+          #    exclude them entirely. Selecting them would still scan the full table just to
+          #    discover there's nothing new — this skips the node, zero work.
+          DAILY_EX=""; [ "$NEW_DAILY" = "0" ] && DAILY_EX="--exclude fct_price --exclude fct_scada"
+          dbt run --exclude stg_csv_archive_log --exclude fct_summary $DAILY_EX $DBT \
             || { echo "::warning::dbt run failed — retrying once..."; sleep 60; dbt retry $DBT; }
           # 4. Summary: overwrite when a new daily landed, else append intraday.
           FR=""; [ "$NEW_DAILY" = "1" ] && FR="--full-refresh"
