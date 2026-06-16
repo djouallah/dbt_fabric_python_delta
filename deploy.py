@@ -150,7 +150,10 @@ def copy_file(f):
     fab(["cp", rel.as_posix(), f"{LAKEHOUSE}/Files/{rel.parent.as_posix()}/", "-f"])
 
 with ThreadPoolExecutor(max_workers=8) as executor:
-    executor.map(copy_file, files)
+    # Consume the iterator so a failed `fab cp` re-raises here. Bare executor.map(...)
+    # is lazy and never iterated, which silently swallowed copy failures — that is how
+    # the dbt macros/ folder vanished from a workspace while the deploy reported success.
+    list(executor.map(copy_file, files))
 
 # 4. (Removed) Previously ran the notebook to create tables — CI's dbt run
 # already wrote Delta tables directly to the same lakehouse via the duckrun
