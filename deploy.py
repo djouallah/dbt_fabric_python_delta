@@ -9,6 +9,14 @@ import yaml
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--env", default="prod")
+parser.add_argument(
+    "--full", action="store_true",
+    help="Deploy the Fabric items: the semantic model, notebook, variable library and data "
+         "pipeline (+ schedule), plus the dbt project files the notebook reads from OneLake. "
+         "Without this flag the scope is NONE — only the always-required lakehouse is "
+         "provisioned and nothing else is deployed. The real orchestrator is GitHub Actions; "
+         "the Fabric notebook/pipeline are only a fun demo of in-Fabric scheduling.",
+)
 args = parser.parse_args()
 
 root       = Path(__file__).parent
@@ -19,6 +27,10 @@ cfg        = {**all_cfg.get("defaults", {}), **all_cfg[args.env]}
 WS_ID      = cfg["ws"]
 LH_NAME    = cfg["lakehouse_name"]
 dbt        = root / "dbt"
+
+# Lakehouse is always provisioned (it holds the data); the scope is binary — NONE (lakehouse
+# only) or FULL (every Fabric item). Default is NONE.
+print(f"Deploy scope: {'FULL (semantic model + notebook/VL/pipeline)' if args.full else 'NONE (lakehouse only)'}")
 
 # Derive item names from fabric_items/ folder names
 fabric_items = root / "fabric_items"
@@ -104,8 +116,15 @@ else:
 target_lh_id = get_item_id(LAKEHOUSE)
 print(f"Target lakehouse ID: {target_lh_id}")
 
+# Scope NONE stops here: the lakehouse is the only always-required item. Everything below
+# (semantic model + notebook/VL/pipeline) is the FULL scope, opted into with --full.
+if not args.full:
+    print("Scope NONE — lakehouse ensured, skipping all Fabric item deploys (pass --full to deploy them).")
+    raise SystemExit(0)
 
-# 2. Deploy notebook + variable library (variables.json rewritten per env, reverted after)
+
+# 2. Deploy notebook + variable library (variables.json rewritten per env, reverted after).
+#    These drive the in-Fabric orchestration demo; GitHub Actions is the real orchestrator.
 print("=== 2. Deploy notebook + variable library ===")
 vl_path = fabric_items / "deploy_config.VariableLibrary" / "variables.json"
 vl_variables = {
@@ -127,7 +146,7 @@ finally:
 target_nb_id = get_item_id(NOTEBOOK)
 print(f"Target notebook ID:  {target_nb_id}")
 
-# 3. Copy dbt files to OneLake
+# 3. Copy dbt files to OneLake (the notebook reads the project from Files/dbt).
 # Skip build artifacts (target/, logs/) — the notebook regenerates them on every run,
 # and they dominate the per-file `fab cp` subprocess overhead.
 print("=== 3. Copy dbt files to OneLake ===")

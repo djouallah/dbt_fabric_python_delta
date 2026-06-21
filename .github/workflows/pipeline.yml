@@ -10,6 +10,12 @@ on:
       - "deploy_config.yml"
       - ".github/workflows/**"
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the Fabric items? (the lakehouse is always provisioned in Phase 1) none = skip; full = deploy the semantic model + notebook/pipeline orchestration demo"
+        type: choice
+        options: [none, full]
+        default: none
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -130,11 +136,22 @@ jobs:
           dbt docs generate --target dev --project-dir dbt --profiles-dir dbt
           echo "T_DBT_DOCS=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
-      - name: 🚀 Phase 5 — Deploy Fabric items
+      - name: 🚀 Phase 5 — Deploy Fabric items (optional)
         run: |
           T0=$(date +%s)
-          if grep -q "^${{ github.ref_name }}:" deploy_config.yml; then
-            python deploy.py --env ${{ github.ref_name }}
+          # The lakehouse is always provisioned in Phase 1 — deploying the Fabric items is
+          # optional and OFF by default. Orchestration is GitHub Actions; the Fabric
+          # notebook/pipeline are just a demo. Scope is binary: "none" (default, also what a
+          # plain push gets) skips the item deploy; "full" deploys the semantic model +
+          # notebook/VL/pipeline via `deploy.py --full`.
+          DEPLOY="${{ github.event.inputs.deploy }}"
+          DEPLOY="${DEPLOY:-none}"
+          if [ "$DEPLOY" != "full" ]; then
+            echo "::notice::Deploy scope 'none' — skipping Fabric item deploy."
+            echo "DEPLOY_SKIPPED=true" >> "$GITHUB_ENV"
+          elif grep -q "^${{ github.ref_name }}:" deploy_config.yml; then
+            echo "Deploy scope: full"
+            python deploy.py --env ${{ github.ref_name }} --full
             echo "DEPLOY_SKIPPED=false" >> "$GITHUB_ENV"
           else
             echo "::notice::No '${{ github.ref_name }}' section in deploy_config.yml — skipping deploy."
