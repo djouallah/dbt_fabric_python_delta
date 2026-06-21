@@ -55,6 +55,7 @@ print(f"Resolved workspace: {ws} ({WS_ID})")
 LAKEHOUSE = f"{ws}.Workspace/{LH_NAME}.Lakehouse"
 NOTEBOOK  = f"{ws}.Workspace/{NB_NAME}.Notebook"
 PIPELINE  = f"{ws}.Workspace/{PL_NAME}.DataPipeline"
+SEMANTIC_MODEL = f"{ws}.Workspace/{SM_NAME}.SemanticModel"
 
 
 def fab(args, cwd=root):
@@ -193,8 +194,15 @@ download = subprocess.run(
     ["fab", "cp", remote_bim_path, cache_path.as_posix(), "-f"],
     capture_output=True, text=True, cwd=str(root),
 )
+# The cached .bim only proves the DEFINITION is unchanged — not that the model still
+# exists. If the SemanticModel was deleted in the portal, the cache would otherwise skip
+# the deploy and step 7's refresh would 404. So require the item to actually exist before
+# trusting the cache shortcut.
+sm_exists = subprocess.run(["fab", "exists", SEMANTIC_MODEL],
+                           capture_output=True, text=True, cwd=str(root))
 unchanged = (
-    download.returncode == 0
+    "true" in sm_exists.stdout.lower()
+    and download.returncode == 0
     and cache_path.exists()
     and cache_path.read_bytes() == local_bim
 )
@@ -290,7 +298,6 @@ else:
 # permission errors. Microsoft documents role-definition changes taking ~5 min to
 # propagate, so running it last + retrying covers that window.)
 print("=== 7. Refresh semantic model ===")
-SEMANTIC_MODEL = f"{ws}.Workspace/{SM_NAME}.SemanticModel"
 sm_id = get_item_id(SEMANTIC_MODEL)
 for attempt in range(1, 4):
     try:
