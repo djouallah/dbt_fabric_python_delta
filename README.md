@@ -1,10 +1,3 @@
-# ⚠️ HIGHLY EXPERIMENTAL — MAY KILL A DUCK 🦆💀
-
-> [!CAUTION]
-> **This is not for production systems. Experimental and educational purposes only.**
-
----
-
 # dbt + DuckDB + OneLake Delta (via duckrun)
 
 The whole pipeline runs anywhere Python runs — your laptop, a GitHub Actions runner, a
