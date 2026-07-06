@@ -1,6 +1,6 @@
 """Benchmark two semantic models by running the SAME heavy DAX queries against each
-over the XMLA endpoint and timing them — to see whether the `_optimized` model (which
-reads a `sorted by auto` clustered copy of the fact) is faster in Direct Lake.
+over the XMLA endpoint and timing them — to see whether the `_vorder` model (which
+reads a Fabric V-Order copy of the fact) is faster in Direct Lake than the delta-rs base.
 
 NOT a correctness check — both models read the same data, so the numbers are identical
 by construction. What differs is the Delta layout, which changes how much the Direct Lake
@@ -217,13 +217,14 @@ def compare_table(title, base, model, base_res, opt_res, key):
         rows.append((name, b, o, speedup, "opt" if o < b else ("base" if o > b else "tie")))
     overall = (base_tot / opt_tot) if opt_tot else float("inf")
     total_w = "opt" if opt_tot < base_tot else ("base" if opt_tot > base_tot else "tie")
+    mshort = model.rsplit("_", 1)[-1]  # e.g. aemo_electricity_vorder -> "vorder"
     winner_lbl = {"opt": model, "base": base, "tie": "tie"}
     factor = overall if overall >= 1 else (1.0 / overall if overall else 0.0)
     headline = (f"{winner_lbl[total_w]} is {factor:.2f}× faster overall"
-                f" — optimized wins {wins}/{len(QUERIES)}")
+                f" — {mshort} wins {wins}/{len(QUERIES)}")
 
     # ---- boxed console table ----
-    mark = {"opt": "opt ✔", "base": "base ✔", "tie": "tie"}
+    mark = {"opt": f"{mshort} ✔", "base": "base ✔", "tie": "tie"}
     disp = [(n, f"{b:,.1f}", f"{o:,.1f}", f"{s:.2f}×", mark[w]) for (n, b, o, s, w) in rows]
     disp.append(("TOTAL", f"{base_tot:,.1f}", f"{opt_tot:,.1f}", f"{overall:.2f}×", mark[total_w]))
     _render_console(title, ("query", f"{base} (ms)", f"{model} (ms)", "opt/base", "winner"),
@@ -231,7 +232,7 @@ def compare_table(title, base, model, base_res, opt_res, key):
     print(f"  → {headline}")
 
     # ---- markdown for the job summary ----
-    emoji = {"opt": "🟢 optimized", "base": "🔴 base", "tie": "⚪ tie"}
+    emoji = {"opt": f"🟢 {mshort}", "base": "🔴 base", "tie": "⚪ tie"}
     md = [f"### {title}", "",
           f"| Query | {base} (ms) | {model} (ms) | opt / base | Winner |",
           "|:--|--:|--:|--:|:--|"]
@@ -260,7 +261,7 @@ def main():
         f"# 🔍 XMLA benchmark — `{', '.join(others)}` vs `{base}`\n\n"
         f"Workspace `{workspace}` · min of **{runs}** runs per query · "
         f"same data (numbers identical) — only speed differs. "
-        f"Lower ms is better; **opt/base > 1× means the optimized model is faster**.\n")
+        f"Lower ms is better; **opt/base > 1× means the compared model is faster**.\n")
 
     base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
 

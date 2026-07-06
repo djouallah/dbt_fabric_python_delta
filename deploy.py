@@ -42,7 +42,7 @@ def find_item(item_type):
 
 NB_NAME  = find_item("Notebook")
 PL_NAME  = find_item("DataPipeline")
-# There may be more than one semantic model (e.g. the base + an _optimized variant reading
+# There may be more than one semantic model (e.g. the base + a _vorder variant reading
 # a differently-clustered table), so discover them all rather than requiring exactly one.
 SM_NAMES = sorted(p.name.removesuffix(".SemanticModel")
                   for p in fabric_items.glob("*.SemanticModel"))
