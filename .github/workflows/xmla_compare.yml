@@ -1,0 +1,72 @@
+name: 🔍 XMLA compare semantic models
+
+# Manual only. Queries every semantic model in fabric_items/ with the SAME DAX over the
+# XMLA endpoint (ADOMD.NET) and diffs each against the base model — proving the _optimized
+# model returns identical numbers to the base. Uses XMLA, NOT the throttled /executeQueries
+# REST endpoint. Runs on windows-latest where ADOMD.NET loads cleanly.
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "deploy_config.yml env whose workspace to query"
+        type: string
+        default: main
+      dax:
+        description: "DAX to run against every model (blank = default Region summary in xmla_compare.py)"
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  compare:
+    name: 🔍 Compare
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install deps
+        run: pip install pythonnet pyyaml
+
+      - name: 🧩 Install ADOMD.NET client (NuGet)
+        shell: pwsh
+        run: |
+          # NetCore build so it loads under pythonnet's coreclr runtime. No -Version => latest stable.
+          nuget install Microsoft.AnalysisServices.AdomdClient.NetCore.retail.amd64 -OutputDirectory nuget -NonInteractive
+          "ADOMD_DIR=$PWD\nuget" >> $env:GITHUB_ENV
+
+      - name: 🔐 Azure federated login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: 🔍 Query both models over XMLA and diff
+        shell: pwsh
+        env:
+          PYTHONNET_RUNTIME: coreclr
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Resolve the target workspace: id from deploy_config.yml, then name from the Power BI API.
+          $wsId = python -c "import yaml; c = yaml.safe_load(open('deploy_config.yml')); print({**c.get('defaults', {}), **c['${{ inputs.env }}']}['ws'])"
+          $groups = az rest --method get --resource "https://analysis.windows.net/powerbi/api" --url "https://api.powerbi.com/v1.0/myorg/groups?`$filter=id eq '$wsId'" | ConvertFrom-Json
+          $wsName = $groups.value[0].name
+          if (-not $wsName) { throw "Could not resolve workspace name for id $wsId (are you a member?)" }
+          $token = az account get-access-token --resource "https://analysis.windows.net/powerbi/api" --query accessToken -o tsv
+          echo "::add-mask::$token"
+          $env:PBI_WORKSPACE = $wsName
+          $env:PBI_TOKEN = $token
+          $env:PBI_DAX = @'
+          ${{ inputs.dax }}
+          '@
+          python xmla_compare.py
