@@ -125,14 +125,6 @@ jobs:
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
-      - name: ⚡ Phase 2.5 — Build optimized summary table
-        run: |
-          # Mirrors the notebook's optimized-table cell: CI never runs the notebook, so build
-          # mart.fct_summary_optimized here too — otherwise the aemo_electricity_optimized Direct
-          # Lake model 404s on refresh in deploy.py. duckrun auto-acquires a OneLake token
-          # (GitHub OIDC / ONELAKE_TOKEN), so no storage_options needed. read_only=False to write.
-          python -c "import duckrun, os; c = duckrun.connect(os.environ['ONELAKE_TABLES_PATH'] + '/mart', read_only=False); c.sql('create or replace table mart.fct_summary_optimized sorted by auto as select * from mart.fct_summary')"
-
       - name: ✅ Phase 3 — dbt test
         run: |
           T0=$(date +%s)
