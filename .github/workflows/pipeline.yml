@@ -116,6 +116,18 @@ jobs:
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
+      - name: ⚡ Phase 2.5 — Build V-Order table on Fabric Spark (Livy)
+        run: |
+          T0=$(date +%s)
+          # V-Order is a Fabric-Spark-only write path, so build mart.fct_summary_vorder by running a
+          # tiny PySpark CTAS on Fabric via the Lakehouse Livy API (inline session). The core notebook
+          # stays pure-Python/duckrun; this is the only Spark in the repo and it runs remotely.
+          # WS_ID / LH_ID come from Phase 1; mint a Fabric API token for Livy.
+          FABRIC_TOKEN=$(az account get-access-token --resource "https://api.fabric.microsoft.com" --query accessToken -o tsv)
+          echo "::add-mask::$FABRIC_TOKEN"
+          FABRIC_TOKEN="$FABRIC_TOKEN" python livy_vorder.py
+          echo "T_VORDER=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
+
       - name: ✅ Phase 3 — dbt test
         run: |
           T0=$(date +%s)
