@@ -4,12 +4,13 @@ reads a `sorted by auto` clustered copy of the fact) is faster in Direct Lake.
 
 NOT a correctness check — both models read the same data, so the numbers are identical
 by construction. What differs is the Delta layout, which changes how much the Direct Lake
-engine scans. We measure that as query wall-clock time.
+engine has to transcode (cold) and scan (hot). We measure both as query wall-clock.
 
-Cold is not measurable here: Power BI ClearCache does NOT evict Direct Lake's transcoded
-column data, and the only true cold state is a freshly (re)created model. So instead we
-compare HOT: run a few warm-up passes to transcode/cache the columns, discard them, then
-time the hot runs. Both models get the same warm-up → apples to apples.
+COLD is forced per query by DEHYDRATING the model first: a TMSL `clearValues` refresh evicts
+all transcoded column data from memory, then a `full` refresh reframes (on Direct Lake that's
+metadata only — no transcode), so the next query pays the full cold Delta→memory cost. We
+dehydrate before EACH query because the queries share the big fact columns (mw/price/DUID/
+date/time) — without a per-query dehydrate only the first query would be cold.
 
 Uses the XMLA endpoint (ADOMD.NET), NOT the throttled /executeQueries REST endpoint.
 Run headless (GitHub Actions, windows-latest) — see .github/workflows/xmla_compare.yml.
@@ -18,12 +19,14 @@ Env in:
   PBI_WORKSPACE  — workspace *display name* (XMLA data source uses the name, not the id)
   PBI_TOKEN      — AAD access token for https://analysis.windows.net/powerbi/api
   ADOMD_DIR      — folder containing Microsoft.AnalysisServices.AdomdClient.dll
-  BENCH_WARMUP   — discarded warm-up passes over the suite per model (default 2)
-  BENCH_RUNS     — measured hot repetitions per query per model (default 5)
+  BENCH_RUNS     — repetitions per query per model (default 3); best (min) is reported
+  BENCH_COLD     — "true"/"false": measure cold via dehydrate (default true). Falls back to
+                   hot-only automatically if the token can't run the refresh (needs write).
 
 Exit 0 always — this is a benchmark, not a pass/fail gate.
 """
 import glob
+import json
 import os
 import statistics
 import sys
@@ -94,6 +97,15 @@ def open_conn(workspace: str, model: str, token: str):
     return conn
 
 
+def dehydrate_model(conn, model):
+    """Evict all column data (clearValues) then reframe (full = metadata only on Direct Lake),
+    leaving the model cold — the next query pays the full Delta->memory transcode cost."""
+    from Microsoft.AnalysisServices.AdomdClient import AdomdCommand
+    for refresh_type in ("clearValues", "full"):
+        tmsl = json.dumps({"refresh": {"type": refresh_type, "objects": [{"database": model}]}})
+        AdomdCommand(tmsl, conn).ExecuteNonQuery()
+
+
 def run_query(conn, dax: str):
     """Execute dax, drain all rows, return (elapsed_ms, row_count)."""
     from Microsoft.AnalysisServices.AdomdClient import AdomdCommand
@@ -111,29 +123,40 @@ def run_query(conn, dax: str):
     return (time.perf_counter() - t0) * 1000.0, rows
 
 
-def bench_model(workspace, model, token, warmup, runs):
-    print(f"\n=== Benchmarking {model} (warmup={warmup} discarded, hot runs={runs}) ===")
+def bench_model(workspace, model, token, runs, want_cold):
+    print(f"\n=== Benchmarking {model} (runs={runs}, cold={want_cold}) ===")
     conn = open_conn(workspace, model, token)
+    can_cold = want_cold
+    if want_cold:
+        try:
+            dehydrate_model(conn, model)
+            print("  dehydrate: OK (per-query cold timing enabled)")
+        except Exception as e:
+            can_cold = False
+            print(f"  dehydrate: unavailable ({str(e).splitlines()[0][:120]}) — hot timing only")
     results = {}
     try:
-        # Warm-up: transcode/cache the columns the suite touches. Timings discarded.
-        for w in range(warmup):
-            for _, dax in QUERIES:
-                run_query(conn, dax)
-            print(f"  warm-up pass {w + 1}/{warmup} done")
-        # Measured HOT runs.
         for name, dax in QUERIES:
-            times, rowcount = [], None
+            cold, hot, rowcount = [], [], None
             for _ in range(runs):
-                ms, rows = run_query(conn, dax)
-                times.append(ms)
+                if can_cold:
+                    dehydrate_model(conn, model)          # cold state
+                    c, rows = run_query(conn, dax)         # first hit = cold transcode
+                    cold.append(c)
+                    rowcount = rows
+                h, rows = run_query(conn, dax)             # resident = hot
+                hot.append(h)
                 rowcount = rows
-            results[name] = {"min": min(times), "median": statistics.median(times), "rows": rowcount}
-            print(f"  {name:<28} min={results[name]['min']:8.1f}ms  "
-                  f"median={results[name]['median']:8.1f}ms  rows={rowcount}")
+            res = {"hot_min": min(hot), "hot_median": statistics.median(hot), "rows": rowcount}
+            if cold:
+                res["cold_min"] = min(cold)
+                res["cold_median"] = statistics.median(cold)
+            results[name] = res
+            cold_s = f"cold_min={res['cold_min']:8.1f}ms  " if cold else ""
+            print(f"  {name:<28} {cold_s}hot_min={res['hot_min']:8.1f}ms  rows={rowcount}")
     finally:
         conn.Close()
-    return results
+    return results, can_cold
 
 
 def discover_models():
@@ -146,12 +169,34 @@ def discover_models():
     return base, [n for n in names if n != base]
 
 
+def compare_table(title, base, model, base_res, opt_res, key):
+    header = f"{'query':<28} {'base(ms)':>12} {'opt(ms)':>12} {'speedup':>9}"
+    print(f"\n============ {title} ============")
+    print(header)
+    print("-" * len(header))
+    base_tot = opt_tot = 0.0
+    wins = 0
+    for name, _ in QUERIES:
+        b = base_res[name][key]
+        o = opt_res[name][key]
+        base_tot += b
+        opt_tot += o
+        speedup = (b / o) if o else float("inf")
+        wins += 1 if o < b else 0
+        flag = "faster" if o < b else ("slower" if o > b else "equal")
+        print(f"{name:<28} {b:12.1f} {o:12.1f} {speedup:8.2f}x {flag}")
+    print("-" * len(header))
+    overall = (base_tot / opt_tot) if opt_tot else float("inf")
+    print(f"{'TOTAL':<28} {base_tot:12.1f} {opt_tot:12.1f} {overall:8.2f}x")
+    print(f"{model}: faster on {wins}/{len(QUERIES)} queries; overall {overall:.2f}x vs {base}.")
+
+
 def main():
     workspace = os.environ["PBI_WORKSPACE"].strip()
     token = os.environ["PBI_TOKEN"].strip()
     adomd_dir = os.environ.get("ADOMD_DIR", ".")
-    warmup = int(os.environ.get("BENCH_WARMUP", "2"))
-    runs = int(os.environ.get("BENCH_RUNS", "5"))
+    runs = int(os.environ.get("BENCH_RUNS", "3"))
+    want_cold = (os.environ.get("BENCH_COLD", "true").strip().lower() != "false")
 
     _load_adomd(adomd_dir)
     base, others = discover_models()
@@ -159,30 +204,15 @@ def main():
     print(f"Base model: {base}")
     print(f"Compare   : {', '.join(others)}")
 
-    base_res = bench_model(workspace, base, token, warmup, runs)
+    base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
 
     for model in others:
-        opt_res = bench_model(workspace, model, token, warmup, runs)
-        print(f"\n============ {model}  vs  {base}   (HOT, best of {runs} after {warmup} warm-ups) ============")
-        header = f"{'query':<28} {'base(ms)':>12} {'opt(ms)':>12} {'speedup':>9}"
-        print(header)
-        print("-" * len(header))
-        base_tot = opt_tot = 0.0
-        wins = 0
-        for name, _ in QUERIES:
-            b = base_res[name]["min"]
-            o = opt_res[name]["min"]
-            base_tot += b
-            opt_tot += o
-            speedup = (b / o) if o else float("inf")
-            wins += 1 if o < b else 0
-            flag = "faster" if o < b else ("slower" if o > b else "equal")
-            print(f"{name:<28} {b:12.1f} {o:12.1f} {speedup:8.2f}x {flag}")
-        print("-" * len(header))
-        overall = (base_tot / opt_tot) if opt_tot else float("inf")
-        print(f"{'TOTAL':<28} {base_tot:12.1f} {opt_tot:12.1f} {overall:8.2f}x")
-        print(f"\n{model}: faster on {wins}/{len(QUERIES)} queries; "
-              f"overall {overall:.2f}x vs {base} (hot timing, min of {runs}).")
+        opt_res, opt_cold = bench_model(workspace, model, token, runs, want_cold)
+        if base_cold and opt_cold:
+            compare_table(f"{model} vs {base}  —  COLD (min of {runs}, dehydrated per query)",
+                          base, model, base_res, opt_res, "cold_min")
+        compare_table(f"{model} vs {base}  —  HOT (min of {runs})",
+                      base, model, base_res, opt_res, "hot_min")
 
 
 if __name__ == "__main__":

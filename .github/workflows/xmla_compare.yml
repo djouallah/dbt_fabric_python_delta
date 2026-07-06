@@ -12,14 +12,14 @@ on:
         description: "deploy_config.yml env whose workspace to query"
         type: string
         default: main
-      warmup:
-        description: "discarded warm-up passes over the suite per model (transcode into memory)"
-        type: string
-        default: "2"
       runs:
-        description: "measured hot repetitions per query per model (best time is reported)"
+        description: "repetitions per query per model (best/min is reported)"
         type: string
-        default: "5"
+        default: "3"
+      cold:
+        description: "measure cold by dehydrating (clearValues+full) before each query"
+        type: boolean
+        default: true
 
 permissions:
   id-token: write
@@ -61,8 +61,8 @@ jobs:
         env:
           PYTHONNET_RUNTIME: coreclr
           PYTHONIOENCODING: utf-8
-          BENCH_WARMUP: ${{ inputs.warmup }}
           BENCH_RUNS: ${{ inputs.runs }}
+          BENCH_COLD: ${{ inputs.cold }}
         run: |
           $ErrorActionPreference = "Stop"
           # Resolve the target workspace: id from deploy_config.yml, then name from the Power BI API.
