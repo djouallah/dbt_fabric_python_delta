@@ -40,7 +40,7 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install deps
-        run: pip install pythonnet pyyaml
+        run: pip install pythonnet pyyaml duckrun
 
       - name: 🧩 Install ADOMD.NET client (NuGet)
         shell: pwsh
@@ -55,6 +55,21 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
+
+      - name: 📊 Table stats (duckrun) — fct_summary vs fct_summary_optimized
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Resolve the lakehouse OneLake Tables path: ws id from deploy_config.yml, lakehouse id from the Fabric API.
+          $meta = python -c "import yaml, json; c = yaml.safe_load(open('deploy_config.yml')); e = {**c.get('defaults', {}), **c['${{ inputs.env }}']}; print(json.dumps({'ws': e['ws'], 'lh': e['lakehouse_name']}))" | ConvertFrom-Json
+          $lhs = az rest --method get --resource "https://api.fabric.microsoft.com" --url "https://api.fabric.microsoft.com/v1/workspaces/$($meta.ws)/lakehouses" | ConvertFrom-Json
+          $lhId = ($lhs.value | Where-Object { $_.displayName -eq $meta.lh }).id
+          if (-not $lhId) { throw "Could not find lakehouse '$($meta.lh)' in workspace $($meta.ws)" }
+          $env:ONELAKE_TABLES_PATH = "abfss://$($meta.ws)@onelake.dfs.fabric.microsoft.com/$lhId/Tables"
+          # duckrun auto-acquires a OneLake token via GitHub OIDC (id-token: write) — rows/files/size_mb/vorder/compression per table.
+          python -c "import duckrun, os; duckrun.connect(os.environ['ONELAKE_TABLES_PATH'] + '/mart').get_stats('fct_summary*').show()"
 
       - name: 🔍 Benchmark both models over XMLA
         shell: pwsh
