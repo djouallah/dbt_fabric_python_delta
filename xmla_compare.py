@@ -227,14 +227,14 @@ def compare_table(title, base, model, base_res, opt_res, key):
     mark = {"opt": f"{mshort} ✔", "base": "base ✔", "tie": "tie"}
     disp = [(n, f"{b:,.1f}", f"{o:,.1f}", f"{s:.2f}×", mark[w]) for (n, b, o, s, w) in rows]
     disp.append(("TOTAL", f"{base_tot:,.1f}", f"{opt_tot:,.1f}", f"{overall:.2f}×", mark[total_w]))
-    _render_console(title, ("query", f"{base} (ms)", f"{model} (ms)", "opt/base", "winner"),
+    _render_console(title, ("query", f"{base} (ms)", f"{model} (ms)", f"base/{mshort}", "winner"),
                     disp, ("l", "r", "r", "r", "l"), sep_before_last=True)
     print(f"  → {headline}")
 
     # ---- markdown for the job summary ----
     emoji = {"opt": f"🟢 {mshort}", "base": "🔴 base", "tie": "⚪ tie"}
     md = [f"### {title}", "",
-          f"| Query | {base} (ms) | {model} (ms) | opt / base | Winner |",
+          f"| Query | {base} (ms) | {model} (ms) | base / {mshort} | Winner |",
           "|:--|--:|--:|--:|:--|"]
     for (n, b, o, s, w) in rows:
         md.append(f"| `{n}` | {b:,.1f} | {o:,.1f} | {s:.2f}× | {emoji[w]} |")
@@ -261,7 +261,7 @@ def main():
         f"# 🔍 XMLA benchmark — `{', '.join(others)}` vs `{base}`\n\n"
         f"Workspace `{workspace}` · min of **{runs}** runs per query · "
         f"same data (numbers identical) — only speed differs. "
-        f"Lower ms is better; **opt/base > 1× means the compared model is faster**.\n")
+        f"Lower ms is better; **base/model ratio > 1× means the compared model is faster**.\n")
 
     base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
 
