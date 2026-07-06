@@ -1,8 +1,9 @@
-name: 🔍 XMLA compare semantic models
+name: 🔍 XMLA benchmark semantic models
 
-# Manual only. Queries every semantic model in fabric_items/ with the SAME DAX over the
-# XMLA endpoint (ADOMD.NET) and diffs each against the base model — proving the _optimized
-# model returns identical numbers to the base. Uses XMLA, NOT the throttled /executeQueries
+# Manual only. Runs a suite of heavy DAX queries against every semantic model in
+# fabric_items/ over the XMLA endpoint (ADOMD.NET) and TIMES them — to see whether the
+# _optimized model (sorted-by-auto clustered fact) is faster in Direct Lake. Same data, so
+# numbers are identical; only speed differs. Uses XMLA, NOT the throttled /executeQueries
 # REST endpoint. Runs on windows-latest where ADOMD.NET loads cleanly.
 on:
   workflow_dispatch:
@@ -11,20 +12,24 @@ on:
         description: "deploy_config.yml env whose workspace to query"
         type: string
         default: main
-      dax:
-        description: "DAX to run against every model (blank = default Region summary in xmla_compare.py)"
+      warmup:
+        description: "discarded warm-up passes over the suite per model (transcode into memory)"
         type: string
-        default: ""
+        default: "2"
+      runs:
+        description: "measured hot repetitions per query per model (best time is reported)"
+        type: string
+        default: "5"
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  compare:
-    name: 🔍 Compare
+  benchmark:
+    name: 🔍 Benchmark
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -51,11 +56,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
-      - name: 🔍 Query both models over XMLA and diff
+      - name: 🔍 Benchmark both models over XMLA
         shell: pwsh
         env:
           PYTHONNET_RUNTIME: coreclr
           PYTHONIOENCODING: utf-8
+          BENCH_WARMUP: ${{ inputs.warmup }}
+          BENCH_RUNS: ${{ inputs.runs }}
         run: |
           $ErrorActionPreference = "Stop"
           # Resolve the target workspace: id from deploy_config.yml, then name from the Power BI API.
@@ -67,7 +74,4 @@ jobs:
           echo "::add-mask::$token"
           $env:PBI_WORKSPACE = $wsName
           $env:PBI_TOKEN = $token
-          $env:PBI_DAX = @'
-          ${{ inputs.dax }}
-          '@
           python xmla_compare.py

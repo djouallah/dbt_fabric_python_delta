@@ -1,180 +1,188 @@
-"""Query every semantic model in fabric_items/ with the SAME DAX over the XMLA
-endpoint and diff the results against the base model.
+"""Benchmark two semantic models by running the SAME heavy DAX queries against each
+over the XMLA endpoint and timing them — to see whether the `_optimized` model (which
+reads a `sorted by auto` clustered copy of the fact) is faster in Direct Lake.
 
-Purpose: prove that a `_optimized` model (which reads a re-clustered copy of the
-fact) returns identical numbers to the base model. Uses the XMLA endpoint (ADOMD.NET),
-NOT the /executeQueries REST endpoint — the REST DAX endpoint is throttled hard.
+NOT a correctness check — both models read the same data, so the numbers are identical
+by construction. What differs is the Delta layout, which changes how much the Direct Lake
+engine scans. We measure that as query wall-clock time.
 
+Cold is not measurable here: Power BI ClearCache does NOT evict Direct Lake's transcoded
+column data, and the only true cold state is a freshly (re)created model. So instead we
+compare HOT: run a few warm-up passes to transcode/cache the columns, discard them, then
+time the hot runs. Both models get the same warm-up → apples to apples.
+
+Uses the XMLA endpoint (ADOMD.NET), NOT the throttled /executeQueries REST endpoint.
 Run headless (GitHub Actions, windows-latest) — see .github/workflows/xmla_compare.yml.
-Auth: a Power BI AAD access token passed as the XMLA connection Password.
 
 Env in:
   PBI_WORKSPACE  — workspace *display name* (XMLA data source uses the name, not the id)
   PBI_TOKEN      — AAD access token for https://analysis.windows.net/powerbi/api
-  PBI_DAX        — optional DAX; blank -> DEFAULT_DAX below
   ADOMD_DIR      — folder containing Microsoft.AnalysisServices.AdomdClient.dll
-                   (the NuGet install dir; we glob for the dll under it)
+  BENCH_WARMUP   — discarded warm-up passes over the suite per model (default 2)
+  BENCH_RUNS     — measured hot repetitions per query per model (default 5)
 
-Exit code 0 = all models match the base, 1 = a difference (or an error).
+Exit 0 always — this is a benchmark, not a pass/fail gate.
 """
 import glob
 import os
+import statistics
 import sys
+import time
 from pathlib import Path
 
-# Windows CI console defaults to cp1252, which can't encode the ✅/❌ status glyphs — force UTF-8.
+# Windows CI console defaults to cp1252, which can't encode the emoji/glyphs — force UTF-8.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-# A query that exercises the fact aggregations at Region grain, so ANY data
-# difference between the base and optimized tables surfaces. Only measures/columns
-# that exist in the model are referenced (see model.bim).
-DEFAULT_DAX = """
-EVALUATE
-SUMMARIZECOLUMNS(
-    dim_duid[Region],
-    "Total MWh", [Total MWh],
-    "Avg Price", [Avg Price],
-    "Generator Count", [Generator Count],
-    "Rows", COUNTROWS(fct_summary)
-)
-ORDER BY dim_duid[Region]
-""".strip()
-
-# Round floats before comparing so identical data can't fail on a last-bit wobble.
-FLOAT_TOL_DECIMALS = 6
+# Heavy queries: each forces a large scan of the ~140M-row fact but returns a SMALL result,
+# so we time the engine (scan/aggregate), not row transfer over the wire. Measures/columns
+# referenced all exist in model.bim (fct_summary, dim_duid, dim_calendar + the model measures).
+QUERIES = [
+    ("region_x_year",
+     'EVALUATE SUMMARIZECOLUMNS(dim_duid[Region], dim_calendar[year], '
+     '"MWh", [Total MWh], "AvgP", [Avg Price], "Gens", [Generator Count])'),
+    ("fuel_x_region",
+     'EVALUATE SUMMARIZECOLUMNS(dim_duid[FuelSourceDescriptor], dim_duid[Region], '
+     '"MWh", [Total MWh], "MW", [Total MW])'),
+    ("timeofday_x_region",
+     'EVALUATE SUMMARIZECOLUMNS(fct_summary[time], dim_duid[Region], '
+     '"MWh", [Total MWh], "AvgP", [Avg Price])'),
+    ("duid_x_month",
+     'EVALUATE SUMMARIZECOLUMNS(fct_summary[DUID], dim_calendar[year], dim_calendar[month], '
+     '"MWh", [Total MWh])'),
+    ("filtered_nsw_2024_by_duid",
+     'EVALUATE CALCULATETABLE('
+     'SUMMARIZECOLUMNS(fct_summary[DUID], "MWh", [Total MWh], "AvgP", [Avg Price]), '
+     'dim_duid[Region] = "NSW1", dim_calendar[year] = 2024)'),
+    ("scalar_weighted_full_scan",
+     'EVALUATE ROW('
+     '"RevenueProxy", SUMX(fct_summary, fct_summary[mw] * fct_summary[price]), '
+     '"DistinctDUID", DISTINCTCOUNT(fct_summary[DUID]), '
+     '"Rows", COUNTROWS(fct_summary))'),
+    ("topn_duid_by_mwh",
+     'EVALUATE TOPN(50, SUMMARIZECOLUMNS(fct_summary[DUID], dim_calendar[year], '
+     '"MWh", [Total MWh]), [MWh], DESC)'),
+]
 
 
 def _load_adomd(adomd_dir: str):
     """Make Microsoft.AnalysisServices.AdomdClient importable via pythonnet."""
     import clr  # pythonnet
-    dll = None
-    for pat in ("**/Microsoft.AnalysisServices.AdomdClient.dll",):
-        hits = glob.glob(os.path.join(adomd_dir, pat), recursive=True)
-        if hits:
-            # Prefer a netcore build (matches PYTHONNET_RUNTIME=coreclr); else take any.
-            hits.sort(key=lambda p: ("netcore" not in p.lower() and "net6" not in p.lower(),
-                                     len(p)))
-            dll = hits[0]
-            break
-    if not dll:
+    hits = glob.glob(os.path.join(adomd_dir, "**", "Microsoft.AnalysisServices.AdomdClient.dll"),
+                     recursive=True)
+    if not hits:
         sys.exit(f"ADOMD client DLL not found under {adomd_dir!r}")
-    d = os.path.dirname(dll)
+    hits.sort(key=lambda p: ("netcore" not in p.lower() and "net6" not in p.lower(), len(p)))
+    d = os.path.dirname(hits[0])
     if d not in sys.path:
         sys.path.append(d)
     clr.AddReference("Microsoft.AnalysisServices.AdomdClient")
-    print(f"Loaded ADOMD from {dll}")
+    print(f"Loaded ADOMD from {hits[0]}")
 
 
-def _normalize(v):
-    if isinstance(v, float):
-        return round(v, FLOAT_TOL_DECIMALS)
-    # ADOMD may hand back System.Decimal / DBNull etc — str() is stable for comparison
-    if v is None:
-        return None
-    return v
-
-
-def query(workspace: str, model: str, token: str, dax: str):
-    from Microsoft.AnalysisServices.AdomdClient import AdomdConnection, AdomdCommand
+def open_conn(workspace: str, model: str, token: str):
+    from Microsoft.AnalysisServices.AdomdClient import AdomdConnection
     conn_str = (
         f"Data Source=powerbi://api.powerbi.com/v1.0/myorg/{workspace};"
         f"Initial Catalog={model};User ID=;Password={token};"
     )
     conn = AdomdConnection(conn_str)
     conn.Open()
+    return conn
+
+
+def run_query(conn, dax: str):
+    """Execute dax, drain all rows, return (elapsed_ms, row_count)."""
+    from Microsoft.AnalysisServices.AdomdClient import AdomdCommand
+    t0 = time.perf_counter()
+    reader = AdomdCommand(dax, conn).ExecuteReader()
+    rows = 0
     try:
-        reader = AdomdCommand(dax, conn).ExecuteReader()
-        try:
-            cols = [reader.GetName(i) for i in range(reader.FieldCount)]
-            rows = []
-            while reader.Read():
-                rows.append(tuple(_normalize(reader.GetValue(i)) for i in range(reader.FieldCount)))
-        finally:
-            reader.Close()
-        return cols, rows
+        fc = reader.FieldCount
+        while reader.Read():
+            for i in range(fc):
+                reader.GetValue(i)
+            rows += 1
+    finally:
+        reader.Close()
+    return (time.perf_counter() - t0) * 1000.0, rows
+
+
+def bench_model(workspace, model, token, warmup, runs):
+    print(f"\n=== Benchmarking {model} (warmup={warmup} discarded, hot runs={runs}) ===")
+    conn = open_conn(workspace, model, token)
+    results = {}
+    try:
+        # Warm-up: transcode/cache the columns the suite touches. Timings discarded.
+        for w in range(warmup):
+            for _, dax in QUERIES:
+                run_query(conn, dax)
+            print(f"  warm-up pass {w + 1}/{warmup} done")
+        # Measured HOT runs.
+        for name, dax in QUERIES:
+            times, rowcount = [], None
+            for _ in range(runs):
+                ms, rows = run_query(conn, dax)
+                times.append(ms)
+                rowcount = rows
+            results[name] = {"min": min(times), "median": statistics.median(times), "rows": rowcount}
+            print(f"  {name:<28} min={results[name]['min']:8.1f}ms  "
+                  f"median={results[name]['median']:8.1f}ms  rows={rowcount}")
     finally:
         conn.Close()
+    return results
 
 
 def discover_models():
-    """(base_model, [other_models]) from fabric_items/*.SemanticModel.
-
-    Base = the shortest name (e.g. 'aemo_electricity'); the rest (e.g.
-    'aemo_electricity_optimized') are compared against it."""
     root = Path(__file__).parent
     names = sorted(p.name.removesuffix(".SemanticModel")
                    for p in (root / "fabric_items").glob("*.SemanticModel"))
     if len(names) < 2:
-        sys.exit(f"Need at least 2 semantic models to compare, found {len(names)}: {names}")
+        sys.exit(f"Need at least 2 semantic models to benchmark, found {len(names)}: {names}")
     base = min(names, key=len)
-    others = [n for n in names if n != base]
-    return base, others
-
-
-def _print_rows(cols, rows, limit=50):
-    print("  " + " | ".join(str(c) for c in cols))
-    for r in rows[:limit]:
-        print("  " + " | ".join(str(x) for x in r))
-    if len(rows) > limit:
-        print(f"  … ({len(rows) - limit} more rows)")
-
-
-def diff(base_res, other_res):
-    """Return a list of human-readable difference lines (empty = identical)."""
-    (bcols, brows), (ocols, orows) = base_res, other_res
-    diffs = []
-    if bcols != ocols:
-        diffs.append(f"columns differ: base={bcols} other={ocols}")
-        return diffs
-    if len(brows) != len(orows):
-        diffs.append(f"row count differs: base={len(brows)} other={len(orows)}")
-    for i, (br, orow) in enumerate(zip(brows, orows)):
-        if br != orow:
-            diffs.append(f"row {i} differs:\n    base : {br}\n    other: {orow}")
-    return diffs
+    return base, [n for n in names if n != base]
 
 
 def main():
     workspace = os.environ["PBI_WORKSPACE"].strip()
     token = os.environ["PBI_TOKEN"].strip()
-    dax = (os.environ.get("PBI_DAX") or "").strip() or DEFAULT_DAX
     adomd_dir = os.environ.get("ADOMD_DIR", ".")
+    warmup = int(os.environ.get("BENCH_WARMUP", "2"))
+    runs = int(os.environ.get("BENCH_RUNS", "5"))
 
     _load_adomd(adomd_dir)
-
     base, others = discover_models()
     print(f"Workspace : {workspace}")
     print(f"Base model: {base}")
     print(f"Compare   : {', '.join(others)}")
-    print("DAX:\n" + "\n".join("  " + l for l in dax.splitlines()))
-    print("-" * 72)
 
-    base_res = query(workspace, base, token, dax)
-    print(f"[{base}] {len(base_res[1])} rows")
-    _print_rows(*base_res)
-    print("-" * 72)
+    base_res = bench_model(workspace, base, token, warmup, runs)
 
-    failed = False
     for model in others:
-        other_res = query(workspace, model, token, dax)
-        d = diff(base_res, other_res)
-        if d:
-            failed = True
-            print(f"❌ {model} DIFFERS from {base}:")
-            for line in d:
-                print("  " + line)
-        else:
-            print(f"✅ {model} matches {base} ({len(other_res[1])} rows identical)")
-        print("-" * 72)
-
-    if failed:
-        print("::error::XMLA comparison found differences between semantic models")
-        sys.exit(1)
-    print("All models match the base — no difference.")
+        opt_res = bench_model(workspace, model, token, warmup, runs)
+        print(f"\n============ {model}  vs  {base}   (HOT, best of {runs} after {warmup} warm-ups) ============")
+        header = f"{'query':<28} {'base(ms)':>12} {'opt(ms)':>12} {'speedup':>9}"
+        print(header)
+        print("-" * len(header))
+        base_tot = opt_tot = 0.0
+        wins = 0
+        for name, _ in QUERIES:
+            b = base_res[name]["min"]
+            o = opt_res[name]["min"]
+            base_tot += b
+            opt_tot += o
+            speedup = (b / o) if o else float("inf")
+            wins += 1 if o < b else 0
+            flag = "faster" if o < b else ("slower" if o > b else "equal")
+            print(f"{name:<28} {b:12.1f} {o:12.1f} {speedup:8.2f}x {flag}")
+        print("-" * len(header))
+        overall = (base_tot / opt_tot) if opt_tot else float("inf")
+        print(f"{'TOTAL':<28} {base_tot:12.1f} {opt_tot:12.1f} {overall:8.2f}x")
+        print(f"\n{model}: faster on {wins}/{len(QUERIES)} queries; "
+              f"overall {overall:.2f}x vs {base} (hot timing, min of {runs}).")
 
 
 if __name__ == "__main__":
