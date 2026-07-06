@@ -1,15 +1,15 @@
 {{ config(
     materialized='incremental',
-    incremental_strategy='safeappend',
+    incremental_strategy='append',
     partition_by=['month_key'],
     pre_hook="SET VARIABLE scada_daily_paths = (SELECT COALESCE(NULLIF(list('{{ get_csv_archive_path() }}' || archive_path), []), ['']) FROM (SELECT archive_path FROM {{ ref('stg_csv_archive_log') }} WHERE source_type = 'daily'{% if is_incremental() %} AND csv_filename NOT IN (SELECT DISTINCT file FROM {{ this }}){% endif %} LIMIT {{ env_var('process_limit', '1000') }}))"
 ) }}
 
-{#-- safeappend, not merge/insert: dedup is already done in SQL (the pre_hook only loads files
+{#-- append, not merge/insert: dedup is already done in SQL (the pre_hook only loads files
      NOT already in {{ this }}), so a key-join merge is redundant work that scans the target.
-     safeappend is a plain streaming append (no target scan, DuckDB keeps full memory) plus a
-     compare-and-swap: it commits only if the table version has not moved since this run read
-     it, else it fails and the run re-runs — so no duplicate files slip in under concurrency. --#}
+     append is a plain streaming append (no target scan, DuckDB keeps full memory). Dedup
+     relies on that NOT IN {{ this }} filter under a single writer — the run is not concurrent,
+     so no version compare-and-swap is needed. --#}
 
 {%- set check_files_query -%}
 SELECT COUNT(*) as cnt FROM {{ ref('stg_csv_archive_log') }}
