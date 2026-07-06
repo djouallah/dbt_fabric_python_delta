@@ -8,7 +8,9 @@ on:
       - "fabric_items/**"
       - "deploy.py"
       - "deploy_config.yml"
-      - ".github/workflows/**"
+      # Only THIS workflow re-triggers the deploy pipeline — editing other workflows
+      # (e.g. the manual XMLA benchmark) or its helper script must not start a full deploy.
+      - ".github/workflows/pipeline.yml"
   workflow_dispatch:
     inputs:
       deploy:
