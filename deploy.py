@@ -42,7 +42,12 @@ def find_item(item_type):
 
 NB_NAME  = find_item("Notebook")
 PL_NAME  = find_item("DataPipeline")
-SM_NAME  = find_item("SemanticModel")
+# There may be more than one semantic model (e.g. the base + an _optimized variant reading
+# a differently-clustered table), so discover them all rather than requiring exactly one.
+SM_NAMES = sorted(p.name.removesuffix(".SemanticModel")
+                  for p in fabric_items.glob("*.SemanticModel"))
+if not SM_NAMES:
+    raise SystemExit("Expected at least one SemanticModel in fabric_items/, found 0")
 
 # Resolve workspace name from ID (ws can be renamed; ID is stable)
 result = subprocess.run(
@@ -55,24 +60,10 @@ print(f"Resolved workspace: {ws} ({WS_ID})")
 LAKEHOUSE = f"{ws}.Workspace/{LH_NAME}.Lakehouse"
 NOTEBOOK  = f"{ws}.Workspace/{NB_NAME}.Notebook"
 PIPELINE  = f"{ws}.Workspace/{PL_NAME}.DataPipeline"
-SEMANTIC_MODEL = f"{ws}.Workspace/{SM_NAME}.SemanticModel"
 
 
 def fab(args, cwd=root):
     subprocess.run(["fab"] + args, check=True, cwd=str(cwd))
-
-
-# Extract source workspace_id and lakehouse_id from the bim file OneLake URL
-bim_path = root / "fabric_items" / f"{SM_NAME}.SemanticModel" / "model.bim"
-bim_text = bim_path.read_text()
-url_match = re.search(r'onelake\.dfs\.fabric\.microsoft\.com/([0-9a-f-]{36})/([0-9a-f-]{36})', bim_text)
-if not url_match:
-    raise SystemExit("Could not find OneLake URL with workspace/lakehouse GUIDs in model.bim")
-source_ws_id = url_match.group(1)
-source_lh_id = url_match.group(2)
-print(f"Source workspace ID: {source_ws_id}")
-print(f"Source lakehouse ID: {source_lh_id}")
-
 
 
 def get_item_id(path):
@@ -180,37 +171,54 @@ with ThreadPoolExecutor(max_workers=8) as executor:
 # adapter (delta-rs), so re-running the notebook here is redundant. The notebook
 # is still deployed and exercised by the scheduled DataPipeline.
 
-# 5. Deploy semantic model (replace GUIDs in bim, deploy, restore)
-# Skips fab_deploy if the post-substitution .bim matches the one cached in
-# OneLake from the previous deploy (Files/semanticmodel/<SM_NAME>.bim).
-print("=== 5. Deploy semantic model ===")
-bim_path.write_text(bim_text.replace(source_ws_id, WS_ID).replace(source_lh_id, target_lh_id))
-local_bim = bim_path.read_bytes()
-remote_bim_path = f"{LAKEHOUSE}/Files/semanticmodel/{SM_NAME}.bim"
+# 5. Deploy semantic model(s) (replace GUIDs in each bim, deploy, restore)
+# A single `fab deploy` with SemanticModel in scope deploys EVERY *.SemanticModel folder,
+# so we prepare all bims first, then deploy once. Skips the deploy only when EVERY model is
+# unchanged: the post-substitution .bim matches the one cached in OneLake from the previous
+# deploy (Files/semanticmodel/<name>.bim) AND the item still exists.
+print("=== 5. Deploy semantic model(s) ===")
 
-cache_path = root / "_remote_bim_cache.bim"
-cache_path.unlink(missing_ok=True)
-download = subprocess.run(
-    ["fab", "cp", remote_bim_path, cache_path.as_posix(), "-f"],
-    capture_output=True, text=True, cwd=str(root),
-)
-# The cached .bim only proves the DEFINITION is unchanged — not that the model still
-# exists. If the SemanticModel was deleted in the portal, the cache would otherwise skip
-# the deploy and step 7's refresh would 404. So require the item to actually exist before
-# trusting the cache shortcut.
-sm_exists = subprocess.run(["fab", "exists", SEMANTIC_MODEL],
-                           capture_output=True, text=True, cwd=str(root))
-unchanged = (
-    "true" in sm_exists.stdout.lower()
-    and download.returncode == 0
-    and cache_path.exists()
-    and cache_path.read_bytes() == local_bim
-)
-cache_path.unlink(missing_ok=True)
+def prepare_bim(name):
+    """GUID-swap a model's bim in place; return (name, bim_path, remote_bim_path, unchanged)."""
+    bim_path = fabric_items / f"{name}.SemanticModel" / "model.bim"
+    bim_text = bim_path.read_text()
+    url_match = re.search(
+        r'onelake\.dfs\.fabric\.microsoft\.com/([0-9a-f-]{36})/([0-9a-f-]{36})', bim_text)
+    if not url_match:
+        raise SystemExit(f"Could not find OneLake URL with workspace/lakehouse GUIDs in {name} model.bim")
+    src_ws_id, src_lh_id = url_match.group(1), url_match.group(2)
+    print(f"[{name}] source workspace ID: {src_ws_id}, lakehouse ID: {src_lh_id}")
+    bim_path.write_text(bim_text.replace(src_ws_id, WS_ID).replace(src_lh_id, target_lh_id))
+    local_bim = bim_path.read_bytes()
+    remote_bim_path = f"{LAKEHOUSE}/Files/semanticmodel/{name}.bim"
+
+    cache_path = root / f"_remote_bim_cache_{name}.bim"
+    cache_path.unlink(missing_ok=True)
+    download = subprocess.run(
+        ["fab", "cp", remote_bim_path, cache_path.as_posix(), "-f"],
+        capture_output=True, text=True, cwd=str(root),
+    )
+    # The cached .bim only proves the DEFINITION is unchanged — not that the model still
+    # exists. If the SemanticModel was deleted in the portal, the cache would otherwise skip
+    # the deploy and step 7's refresh would 404. So require the item to actually exist before
+    # trusting the cache shortcut.
+    sm_exists = subprocess.run(["fab", "exists", f"{ws}.Workspace/{name}.SemanticModel"],
+                               capture_output=True, text=True, cwd=str(root))
+    unchanged = (
+        "true" in sm_exists.stdout.lower()
+        and download.returncode == 0
+        and cache_path.exists()
+        and cache_path.read_bytes() == local_bim
+    )
+    cache_path.unlink(missing_ok=True)
+    return name, bim_path, remote_bim_path, unchanged
+
+prepared = [prepare_bim(name) for name in SM_NAMES]
+all_unchanged = all(p[3] for p in prepared)
 
 try:
-    if unchanged:
-        print("SemanticModel definition matches cached deploy, skipping fab_deploy.")
+    if all_unchanged:
+        print("All SemanticModel definitions match cached deploys, skipping fab_deploy.")
     else:
         for attempt in range(1, 4):
             try:
@@ -222,9 +230,11 @@ try:
                 print(f"SemanticModel deploy attempt {attempt} failed (likely mid-refresh); waiting 45s and retrying...")
                 time.sleep(45)
         subprocess.run(["fab", "mkdir", f"{LAKEHOUSE}/Files/semanticmodel"], cwd=str(root))
-        fab(["cp", str(bim_path), remote_bim_path, "-f"])
+        for name, bim_path, remote_bim_path, _ in prepared:
+            fab(["cp", str(bim_path), remote_bim_path, "-f"])
 finally:
-    subprocess.run(["git", "checkout", str(bim_path)], cwd=str(root))
+    for name, bim_path, _, _ in prepared:
+        subprocess.run(["git", "checkout", str(bim_path)], cwd=str(root))
 
 # 6. Deploy DataPipeline + set notebook reference + schedule
 print("=== 6. Deploy pipeline ===")
@@ -293,22 +303,23 @@ else:
             print(f"Pipeline already has exactly one schedule ({keep['id']}), skipping.")
 
 
-# 7. Refresh semantic model (LAST step — OneLake security/permission propagation
+# 7. Refresh semantic model(s) (LAST step — OneLake security/permission propagation
 # lags behind deploy, so an immediate refresh after the SM deploy can fail with
 # permission errors. Microsoft documents role-definition changes taking ~5 min to
 # propagate, so running it last + retrying covers that window.)
-print("=== 7. Refresh semantic model ===")
-sm_id = get_item_id(SEMANTIC_MODEL)
-for attempt in range(1, 4):
-    try:
-        fab(["api", "-A", "powerbi", "-X", "post", f"groups/{WS_ID}/datasets/{sm_id}/refreshes"])
-        break
-    except subprocess.CalledProcessError:
-        if attempt == 3:
-            raise
-        print(f"Refresh attempt {attempt} failed (likely OneLake security still "
-              f"propagating); waiting 60s and retrying...")
-        time.sleep(60)
+print("=== 7. Refresh semantic model(s) ===")
+for name in SM_NAMES:
+    sm_id = get_item_id(f"{ws}.Workspace/{name}.SemanticModel")
+    for attempt in range(1, 4):
+        try:
+            fab(["api", "-A", "powerbi", "-X", "post", f"groups/{WS_ID}/datasets/{sm_id}/refreshes"])
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 3:
+                raise
+            print(f"[{name}] refresh attempt {attempt} failed (likely OneLake security still "
+                  f"propagating); waiting 60s and retrying...")
+            time.sleep(60)
 
 
 print("=== Deploy complete ===")
