@@ -20,6 +20,10 @@ on:
         description: "measure cold by dehydrating (clearValues+full) before each query"
         type: boolean
         default: true
+      gap_seconds:
+        description: "idle seconds between the base and vorder benchmarks (clean gap in the capacity chart)"
+        type: string
+        default: "180"
 
 permissions:
   id-token: write
@@ -29,7 +33,7 @@ jobs:
   benchmark:
     name: 🔍 Benchmark
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -84,6 +88,7 @@ jobs:
           PYTHONIOENCODING: utf-8
           BENCH_RUNS: ${{ inputs.runs }}
           BENCH_COLD: ${{ inputs.cold }}
+          BENCH_GAP_SECONDS: ${{ inputs.gap_seconds }}
         run: |
           $ErrorActionPreference = "Stop"
           # Resolve the target workspace: id from deploy_config.yml, then name from the Power BI API.

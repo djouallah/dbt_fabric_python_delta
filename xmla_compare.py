@@ -250,6 +250,7 @@ def main():
     adomd_dir = os.environ.get("ADOMD_DIR", ".")
     runs = int(os.environ.get("BENCH_RUNS", "3"))
     want_cold = (os.environ.get("BENCH_COLD", "true").strip().lower() != "false")
+    gap = int(os.environ.get("BENCH_GAP_SECONDS", "180"))  # idle gap between models
 
     _load_adomd(adomd_dir)
     base, others = discover_models()
@@ -266,6 +267,10 @@ def main():
     base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
 
     for model in others:
+        if gap:
+            print(f"\n⏳ Idle gap: sleeping {gap}s before {model} so the Fabric capacity chart "
+                  f"shows a clean base → gap → {model} separation...", flush=True)
+            time.sleep(gap)
         opt_res, opt_cold = bench_model(workspace, model, token, runs, want_cold)
         if base_cold and opt_cold:
             compare_table(f"{model} vs {base}  —  COLD (min of {runs}, dehydrated per query)",
