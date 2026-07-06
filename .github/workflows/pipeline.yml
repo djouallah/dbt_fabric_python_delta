@@ -45,7 +45,7 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install dependencies
-        run: pip install --pre duckrun pyyaml ms-fabric-cli
+        run: pip install duckrun pyyaml ms-fabric-cli
 
       - name: 🔐 Azure federated login
         uses: azure/login@v2
