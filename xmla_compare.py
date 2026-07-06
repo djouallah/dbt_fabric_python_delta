@@ -169,13 +169,44 @@ def discover_models():
     return base, [n for n in names if n != base]
 
 
+def _write_summary(text):
+    """Append markdown to the GitHub Actions job summary (renders as a real table)."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+
+
+def _render_console(title, headers, rows, aligns, sep_before_last=False):
+    """A boxed, aligned unicode table to stdout."""
+    widths = [len(h) for h in headers]
+    for r in rows:
+        for i, c in enumerate(r):
+            widths[i] = max(widths[i], len(str(c)))
+    line = lambda l, m, rt: l + m.join("─" * (w + 2) for w in widths) + rt
+    def frow(cells):
+        parts = []
+        for i, c in enumerate(cells):
+            c = str(c)
+            parts.append(" " + (c.rjust(widths[i]) if aligns[i] == "r" else c.ljust(widths[i])) + " ")
+        return "│" + "│".join(parts) + "│"
+    print(f"\n{title}")
+    print(line("┌", "┬", "┐"))
+    print(frow(headers))
+    print(line("├", "┼", "┤"))
+    body = rows[:-1] if sep_before_last else rows
+    for r in body:
+        print(frow(r))
+    if sep_before_last:
+        print(line("├", "┼", "┤"))
+        print(frow(rows[-1]))
+    print(line("└", "┴", "┘"))
+
+
 def compare_table(title, base, model, base_res, opt_res, key):
-    header = f"{'query':<28} {'base(ms)':>12} {'opt(ms)':>12} {'speedup':>9}"
-    print(f"\n============ {title} ============")
-    print(header)
-    print("-" * len(header))
     base_tot = opt_tot = 0.0
     wins = 0
+    rows = []
     for name, _ in QUERIES:
         b = base_res[name][key]
         o = opt_res[name][key]
@@ -183,12 +214,33 @@ def compare_table(title, base, model, base_res, opt_res, key):
         opt_tot += o
         speedup = (b / o) if o else float("inf")
         wins += 1 if o < b else 0
-        flag = "faster" if o < b else ("slower" if o > b else "equal")
-        print(f"{name:<28} {b:12.1f} {o:12.1f} {speedup:8.2f}x {flag}")
-    print("-" * len(header))
+        rows.append((name, b, o, speedup, "opt" if o < b else ("base" if o > b else "tie")))
     overall = (base_tot / opt_tot) if opt_tot else float("inf")
-    print(f"{'TOTAL':<28} {base_tot:12.1f} {opt_tot:12.1f} {overall:8.2f}x")
-    print(f"{model}: faster on {wins}/{len(QUERIES)} queries; overall {overall:.2f}x vs {base}.")
+    total_w = "opt" if opt_tot < base_tot else ("base" if opt_tot > base_tot else "tie")
+    winner_lbl = {"opt": model, "base": base, "tie": "tie"}
+    factor = overall if overall >= 1 else (1.0 / overall if overall else 0.0)
+    headline = (f"{winner_lbl[total_w]} is {factor:.2f}× faster overall"
+                f" — optimized wins {wins}/{len(QUERIES)}")
+
+    # ---- boxed console table ----
+    mark = {"opt": "opt ✔", "base": "base ✔", "tie": "tie"}
+    disp = [(n, f"{b:,.1f}", f"{o:,.1f}", f"{s:.2f}×", mark[w]) for (n, b, o, s, w) in rows]
+    disp.append(("TOTAL", f"{base_tot:,.1f}", f"{opt_tot:,.1f}", f"{overall:.2f}×", mark[total_w]))
+    _render_console(title, ("query", f"{base} (ms)", f"{model} (ms)", "opt/base", "winner"),
+                    disp, ("l", "r", "r", "r", "l"), sep_before_last=True)
+    print(f"  → {headline}")
+
+    # ---- markdown for the job summary ----
+    emoji = {"opt": "🟢 optimized", "base": "🔴 base", "tie": "⚪ tie"}
+    md = [f"### {title}", "",
+          f"| Query | {base} (ms) | {model} (ms) | opt / base | Winner |",
+          "|:--|--:|--:|--:|:--|"]
+    for (n, b, o, s, w) in rows:
+        md.append(f"| `{n}` | {b:,.1f} | {o:,.1f} | {s:.2f}× | {emoji[w]} |")
+    md.append(f"| **TOTAL** | **{base_tot:,.1f}** | **{opt_tot:,.1f}** | "
+              f"**{overall:.2f}×** | **{emoji[total_w]}** |")
+    md += ["", f"**{headline}.**", ""]
+    _write_summary("\n".join(md))
 
 
 def main():
@@ -203,6 +255,12 @@ def main():
     print(f"Workspace : {workspace}")
     print(f"Base model: {base}")
     print(f"Compare   : {', '.join(others)}")
+
+    _write_summary(
+        f"# 🔍 XMLA benchmark — `{', '.join(others)}` vs `{base}`\n\n"
+        f"Workspace `{workspace}` · min of **{runs}** runs per query · "
+        f"same data (numbers identical) — only speed differs. "
+        f"Lower ms is better; **opt/base > 1× means the optimized model is faster**.\n")
 
     base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
 
