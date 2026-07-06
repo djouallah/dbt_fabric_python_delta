@@ -22,6 +22,13 @@ import os
 import sys
 from pathlib import Path
 
+# Windows CI console defaults to cp1252, which can't encode the ✅/❌ status glyphs — force UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 # A query that exercises the fact aggregations at Region grain, so ANY data
 # difference between the base and optimized tables surfaces. Only measures/columns
 # that exist in the model are referenced (see model.bim).

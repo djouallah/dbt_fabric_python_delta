@@ -55,6 +55,7 @@ jobs:
         shell: pwsh
         env:
           PYTHONNET_RUNTIME: coreclr
+          PYTHONIOENCODING: utf-8
         run: |
           $ErrorActionPreference = "Stop"
           # Resolve the target workspace: id from deploy_config.yml, then name from the Power BI API.
