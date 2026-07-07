@@ -52,12 +52,6 @@ jobs:
           TOKEN=$(az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv)
           echo "::add-mask::$TOKEN"
           echo "ONELAKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-          # Mint the Fabric API token NOW while the OIDC client assertion is fresh — later steps
-          # (Phase 2.5 Livy, after the ~10min dbt run) can't re-mint: the assertion expires in ~5min,
-          # but an issued token lasts ~1h. Reuse it from $GITHUB_ENV instead of calling az again.
-          FABRIC_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
-          echo "::add-mask::$FABRIC_TOKEN"
-          echo "FABRIC_TOKEN=$FABRIC_TOKEN" >> "$GITHUB_ENV"
           fab config set encryption_fallback_enabled true
           FED_TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r '.value')
@@ -121,16 +115,6 @@ jobs:
           dbt run --select fct_summary $FR $DBT
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
-
-      - name: ⚡ Phase 2.5 — Build V-Order table on Fabric Spark (Livy)
-        run: |
-          T0=$(date +%s)
-          # V-Order is a Fabric-Spark-only write path, so build mart.fct_summary_vorder by running a
-          # tiny PySpark CTAS on Fabric via the Lakehouse Livy API (inline session). The core notebook
-          # stays pure-Python/duckrun; this is the only Spark in the repo and it runs remotely.
-          # WS_ID / LH_ID / FABRIC_TOKEN all come from earlier steps (minted while the OIDC assertion was fresh).
-          python livy_vorder.py
-          echo "T_VORDER=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
       - name: ✅ Phase 3 — dbt test
         run: |
