@@ -250,7 +250,7 @@ def main():
     adomd_dir = os.environ.get("ADOMD_DIR", ".")
     runs = int(os.environ.get("BENCH_RUNS", "3"))
     want_cold = (os.environ.get("BENCH_COLD", "true").strip().lower() != "false")
-    gap = int(os.environ.get("BENCH_GAP_SECONDS", "180"))  # idle gap between models
+    gap = int(os.environ.get("BENCH_GAP_SECONDS", "300"))  # idle gap between models (>CU smoothing)
 
     _load_adomd(adomd_dir)
     base, others = discover_models()

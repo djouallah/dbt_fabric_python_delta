@@ -21,9 +21,9 @@ on:
         type: boolean
         default: true
       gap_seconds:
-        description: "idle seconds between the base and vorder benchmarks (clean gap in the capacity chart)"
+        description: "idle seconds between the base and vorder benchmarks (>5min CU smoothing => clean gap in the capacity chart)"
         type: string
-        default: "180"
+        default: "300"
 
 permissions:
   id-token: write
