@@ -160,11 +160,11 @@ def bench_model(workspace, model, token, runs, want_cold):
 
 
 def discover_models():
-    root = Path(__file__).parent
+    repo = Path(__file__).resolve().parent.parent  # this script lives in benchmark/
     # Base model lives in the demo (fabric_items/); the vorder variant is experiment-only (benchmark/).
     names = sorted(p.name.removesuffix(".SemanticModel")
                    for d in ("fabric_items", "benchmark")
-                   for p in (root / d).glob("*.SemanticModel"))
+                   for p in (repo / d).glob("*.SemanticModel"))
     if len(names) < 2:
         sys.exit(f"Need at least 2 semantic models to benchmark, found {len(names)}: {names}")
     base = min(names, key=len)

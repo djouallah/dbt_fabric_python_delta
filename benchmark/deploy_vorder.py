@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-root = Path(__file__).parent
+root = Path(__file__).resolve().parent.parent  # repo root (this script lives in benchmark/)
 BENCH = root / "benchmark"
 
 ap = argparse.ArgumentParser()
