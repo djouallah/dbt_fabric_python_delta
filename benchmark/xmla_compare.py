@@ -29,7 +29,6 @@ Exit 0 always — this is a benchmark, not a pass/fail gate.
 import glob
 import json
 import os
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -165,31 +164,35 @@ def bench_model(workspace, model, token, runs, want_cold):
     results = {}
     try:
         for name, dax in QUERIES:
-            cold, hot, rowcount = [], [], None
+            # Step 0: dehydrate ONCE (evict everything). Then run N times WITHOUT re-dehydrating,
+            # so we see the natural warm-up: run1 = true first-touch cold, middle runs warming,
+            # last run = hot (fully resident).
+            if can_cold:
+                dehydrate_model(conn, model)
+            times, rowcount = [], None
             for _ in range(runs):
-                if can_cold:
-                    dehydrate_model(conn, model)          # cold state
-                    c, rows = run_query(conn, dax)         # first hit = cold transcode
-                    cold.append(c)
-                    rowcount = rows
-                h, rows = run_query(conn, dax)             # resident = hot
-                hot.append(h)
+                t, rows = run_query(conn, dax)
+                times.append(t)
                 rowcount = rows
-            res = {"hot_min": min(hot), "hot_median": statistics.median(hot),
-                   "hot_all": hot, "rows": rowcount}
-            if cold:
-                res["cold_min"] = min(cold)
-                res["cold_median"] = statistics.median(cold)
-                res["cold_all"] = cold
+            res = {"rows": rowcount, "all": times}
+            if can_cold:
+                res["cold_min"] = times[0]                        # run1 = the real cold
+                res["hot_min"] = times[-1] if runs > 1 else times[0]  # last run = hot
+            else:
+                res["hot_min"] = min(times)
             results[name] = res
-            # Per-run detail so run #1 (the true first-touch cold) is visible, not just the min.
+            # Show every run with its warm-up label.
             print(f"  {name}  (rows={rowcount})")
             for i in range(runs):
-                cold_s = f"cold={cold[i]:9.1f}ms  " if cold else ""
-                marker = "  <- first cold" if (cold and i == 0) else ""
-                print(f"      run{i + 1}  {cold_s}hot={hot[i]:9.1f}ms{marker}")
-            cmin = f"cold={res['cold_min']:9.1f}ms  " if cold else ""
-            print(f"      min   {cmin}hot={res['hot_min']:9.1f}ms")
+                if not can_cold:
+                    label = "hot"
+                elif i == 0:
+                    label = "cold  <- first touch"
+                elif i == runs - 1:
+                    label = "hot"
+                else:
+                    label = "warming"
+                print(f"      run{i + 1}  {times[i]:9.1f}ms  {label}")
     finally:
         conn.Close()
     return results, can_cold
@@ -300,9 +303,10 @@ def main():
 
     _write_summary(
         f"# 🔍 XMLA benchmark — `{', '.join(others)}` vs `{base}`\n\n"
-        f"Workspace `{workspace}` · min of **{runs}** runs per query · "
-        f"same data (numbers identical) — only speed differs. "
-        f"Lower ms is better; **base/model ratio > 1× means the compared model is faster**.\n")
+        f"Workspace `{workspace}` · one dehydrate then **{runs}** runs per query "
+        f"(run 1 = cold first-touch, run {runs} = hot) · same data (numbers identical) — "
+        f"only speed differs. Lower ms is better; "
+        f"**base/model ratio > 1× means the compared model is faster**.\n")
 
     base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
     if base_res is None:
@@ -318,9 +322,9 @@ def main():
             print(f"  {model} never became queryable — skipping its comparison.", flush=True)
             continue
         if base_cold and opt_cold:
-            compare_table(f"{model} vs {base}  —  COLD (min of {runs}, dehydrated per query)",
+            compare_table(f"{model} vs {base}  —  COLD (run 1, first touch after one dehydrate)",
                           base, model, base_res, opt_res, "cold_min")
-        compare_table(f"{model} vs {base}  —  HOT (min of {runs})",
+        compare_table(f"{model} vs {base}  —  HOT (run {runs}, fully warmed)",
                       base, model, base_res, opt_res, "hot_min")
 
 
