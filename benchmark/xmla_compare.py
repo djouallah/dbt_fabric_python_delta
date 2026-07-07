@@ -98,13 +98,37 @@ def open_conn(workspace: str, model: str, token: str):
     return conn
 
 
+def _refresh(conn, model, kind):
+    from Microsoft.AnalysisServices.AdomdClient import AdomdCommand
+    tmsl = json.dumps({"refresh": {"type": kind, "objects": [{"database": model}]}})
+    AdomdCommand(tmsl, conn).ExecuteNonQuery()
+
+
 def dehydrate_model(conn, model):
     """Evict all column data (clearValues) then reframe (full = metadata only on Direct Lake),
     leaving the model cold — the next query pays the full Delta->memory transcode cost."""
-    from Microsoft.AnalysisServices.AdomdClient import AdomdCommand
-    for refresh_type in ("clearValues", "full"):
-        tmsl = json.dumps({"refresh": {"type": refresh_type, "objects": [{"database": model}]}})
-        AdomdCommand(tmsl, conn).ExecuteNonQuery()
+    for kind in ("clearValues", "full"):
+        _refresh(conn, model, kind)
+
+
+def warm_up(conn, model, tries=16, delay=30):
+    """A freshly-deployed Direct Lake model can't read its OneLake source until security
+    propagates — the first refresh/query fails with 'source tables ... do not exist or access
+    was denied'. Reframe (full) + probe a trivial query, looping until it actually reads data
+    (or we give up). Returns True once queryable."""
+    probe = 'EVALUATE ROW("n", COUNTROWS(fct_summary))'
+    for i in range(1, tries + 1):
+        try:
+            _refresh(conn, model, "full")   # (re)frame Direct Lake against the current Delta
+            run_query(conn, probe)          # confirm it can actually transcode/read the data
+            print(f"  warm-up: queryable after {i} attempt(s)", flush=True)
+            return True
+        except Exception as e:
+            print(f"  warm-up {i}/{tries}: not ready ({str(e).splitlines()[0][:110]}); "
+                  f"waiting {delay}s...", flush=True)
+            time.sleep(delay)
+    print("  warm-up: model never became queryable — skipping it", flush=True)
+    return False
 
 
 def run_query(conn, dax: str):
@@ -127,6 +151,9 @@ def run_query(conn, dax: str):
 def bench_model(workspace, model, token, runs, want_cold):
     print(f"\n=== Benchmarking {model} (runs={runs}, cold={want_cold}) ===")
     conn = open_conn(workspace, model, token)
+    if not warm_up(conn, model):
+        conn.Close()
+        return None, False
     can_cold = want_cold
     if want_cold:
         try:
@@ -270,6 +297,8 @@ def main():
         f"Lower ms is better; **base/model ratio > 1× means the compared model is faster**.\n")
 
     base_res, base_cold = bench_model(workspace, base, token, runs, want_cold)
+    if base_res is None:
+        sys.exit(f"Base model {base!r} never became queryable — cannot benchmark.")
 
     for model in others:
         if gap:
@@ -277,6 +306,9 @@ def main():
                   f"shows a clean base → gap → {model} separation...", flush=True)
             time.sleep(gap)
         opt_res, opt_cold = bench_model(workspace, model, token, runs, want_cold)
+        if opt_res is None:
+            print(f"  {model} never became queryable — skipping its comparison.", flush=True)
+            continue
         if base_cold and opt_cold:
             compare_table(f"{model} vs {base}  —  COLD (min of {runs}, dehydrated per query)",
                           base, model, base_res, opt_res, "cold_min")
