@@ -175,13 +175,21 @@ def bench_model(workspace, model, token, runs, want_cold):
                 h, rows = run_query(conn, dax)             # resident = hot
                 hot.append(h)
                 rowcount = rows
-            res = {"hot_min": min(hot), "hot_median": statistics.median(hot), "rows": rowcount}
+            res = {"hot_min": min(hot), "hot_median": statistics.median(hot),
+                   "hot_all": hot, "rows": rowcount}
             if cold:
                 res["cold_min"] = min(cold)
                 res["cold_median"] = statistics.median(cold)
+                res["cold_all"] = cold
             results[name] = res
-            cold_s = f"cold_min={res['cold_min']:8.1f}ms  " if cold else ""
-            print(f"  {name:<28} {cold_s}hot_min={res['hot_min']:8.1f}ms  rows={rowcount}")
+            # Per-run detail so run #1 (the true first-touch cold) is visible, not just the min.
+            print(f"  {name}  (rows={rowcount})")
+            for i in range(runs):
+                cold_s = f"cold={cold[i]:9.1f}ms  " if cold else ""
+                marker = "  <- first cold" if (cold and i == 0) else ""
+                print(f"      run{i + 1}  {cold_s}hot={hot[i]:9.1f}ms{marker}")
+            cmin = f"cold={res['cold_min']:9.1f}ms  " if cold else ""
+            print(f"      min   {cmin}hot={res['hot_min']:9.1f}ms")
     finally:
         conn.Close()
     return results, can_cold

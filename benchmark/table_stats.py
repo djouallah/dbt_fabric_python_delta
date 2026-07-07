@@ -46,7 +46,11 @@ def main():
     con = duckrun.connect(os.environ["ONELAKE_TABLES_PATH"] + "/mart",
                           storage_options={"bearer_token": os.environ["ONELAKE_TOKEN"]})
     rel = con.get_stats("fct_summary*")
-    rel.show()  # console
+    # Full detail: show ALL columns (default show() truncates to terminal width -> "8 of 10 shown").
+    try:
+        rel.show(max_width=100000, max_col_width=1000)
+    except TypeError:
+        rel.show()  # older duckdb without the kwargs
     cols, rows = rel.columns, rel.fetchall()
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
