@@ -28,6 +28,10 @@ on:
         description: "duckrun sort for the optimized copy ('auto' recommender, or cols like 'date, time')"
         type: string
         default: "auto"
+      rebuild:
+        description: "rebuild the optimized/vorder tables even if they already exist (else reuse)"
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -98,12 +102,14 @@ jobs:
         # fct_summary and never mutate it, so the benchmark only ever assumes the base exists.
         env:
           PYTHONIOENCODING: utf-8
+          FORCE_REBUILD: ${{ inputs.rebuild }}
         run: python benchmark/livy_vorder.py
 
       - name: 🧭 Build optimized summary table (duckrun sorted, base untouched)
         env:
           PYTHONIOENCODING: utf-8
           OPT_SORT: ${{ inputs.opt_sort }}
+          FORCE_REBUILD: ${{ inputs.rebuild }}
         run: python benchmark/build_optimized.py
 
       - name: 🚀 Deploy benchmark semantic models (optimized + vorder, NOT the demo)

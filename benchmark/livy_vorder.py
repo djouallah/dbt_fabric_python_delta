@@ -22,16 +22,22 @@ import urllib.request
 TOKEN = os.environ["FABRIC_TOKEN"]
 BASE = (f"https://api.fabric.microsoft.com/v1/workspaces/{os.environ['WS_ID']}"
         f"/lakehouses/{os.environ['LH_ID']}/livyapi/versions/2023-12-01")
+FORCE = os.environ.get("FORCE_REBUILD", "false").strip().lower() == "true"
 
 # One Spark cell: enable V-Order, then overwrite mart.fct_summary_vorder from the delta-rs base.
 # The Livy session is created under the lakehouse, so mart.* resolves to its schema-enabled tables.
-SPARK_CODE = '''
-spark.conf.set("spark.sql.parquet.vorder.default", "true")
-(spark.read.table("mart.fct_summary")
-      .write.mode("overwrite").format("delta")
-      .option("parquet.vorder.enabled", "true")
-      .saveAsTable("mart.fct_summary_vorder"))
-print("VORDER_WRITE_OK rows=" + str(spark.read.table("mart.fct_summary_vorder").count()))
+# Skip the (expensive) rebuild if the table already exists, unless FORCE_REBUILD.
+SPARK_CODE = f'''
+force = {FORCE}
+if (not force) and spark.catalog.tableExists("mart.fct_summary_vorder"):
+    print("VORDER_SKIP_EXISTS rows=" + str(spark.read.table("mart.fct_summary_vorder").count()))
+else:
+    spark.conf.set("spark.sql.parquet.vorder.default", "true")
+    (spark.read.table("mart.fct_summary")
+          .write.mode("overwrite").format("delta")
+          .option("parquet.vorder.enabled", "true")
+          .saveAsTable("mart.fct_summary_vorder"))
+    print("VORDER_WRITE_OK rows=" + str(spark.read.table("mart.fct_summary_vorder").count()))
 '''
 
 
