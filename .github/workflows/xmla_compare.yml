@@ -24,6 +24,10 @@ on:
         description: "idle seconds between the base and vorder benchmarks (>5min CU smoothing => clean gap in the capacity chart)"
         type: string
         default: "300"
+      base_sort:
+        description: "duckrun sort for the delta-rs base rebuild ('auto' recommender, or cols like 'date, time')"
+        type: string
+        default: "auto"
 
 permissions:
   id-token: write
@@ -60,55 +64,66 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
+      - name: 🔑 Resolve lakehouse + mint tokens
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # ws id from deploy_config; lakehouse id + workspace name from the Fabric/Power BI APIs.
+          $meta = python -c "import yaml, json; c = yaml.safe_load(open('deploy_config.yml')); e = {**c.get('defaults', {}), **c['${{ inputs.env }}']}; print(json.dumps({'ws': e['ws'], 'lh': e['lakehouse_name']}))" | ConvertFrom-Json
+          $wsId = $meta.ws
+          $lhs = az rest --method get --resource "https://api.fabric.microsoft.com" --url "https://api.fabric.microsoft.com/v1/workspaces/$wsId/lakehouses" | ConvertFrom-Json
+          $lhId = ($lhs.value | Where-Object { $_.displayName -eq $meta.lh }).id
+          if (-not $lhId) { throw "lakehouse '$($meta.lh)' not found in workspace $wsId" }
+          $grp = az rest --method get --resource "https://analysis.windows.net/powerbi/api" --url "https://api.powerbi.com/v1.0/myorg/groups?`$filter=id eq '$wsId'" | ConvertFrom-Json
+          $wsName = $grp.value[0].name
+          if (-not $wsName) { throw "workspace name not resolved for $wsId" }
+          # Mint ALL tokens now, while the OIDC client assertion is fresh (later steps outlive it).
+          $onelake = az account get-access-token --resource "https://storage.azure.com/" --query accessToken -o tsv
+          $fabric  = az account get-access-token --resource "https://api.fabric.microsoft.com" --query accessToken -o tsv
+          $pbi     = az account get-access-token --resource "https://analysis.windows.net/powerbi/api" --query accessToken -o tsv
+          echo "::add-mask::$onelake"; echo "::add-mask::$fabric"; echo "::add-mask::$pbi"
+          @(
+            "WS_ID=$wsId",
+            "LH_ID=$lhId",
+            "WS_NAME=$wsName",
+            "ONELAKE_TABLES_PATH=abfss://$wsId@onelake.dfs.fabric.microsoft.com/$lhId/Tables",
+            "ONELAKE_TOKEN=$onelake",
+            "FABRIC_TOKEN=$fabric",
+            "PBI_TOKEN=$pbi",
+            "PBI_WORKSPACE=$wsName"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: ⚡ Build V-Order table on Fabric Spark (Livy) — FIRST, from the clean summary
+        # Run BEFORE the duckrun re-cluster so the V-Order copy is taken off the untouched
+        # dbt summary — nobody can say duckrun's clustering pre-conditioned the vorder input.
+        run: python benchmark/livy_vorder.py
+
+      - name: 🧭 Re-cluster base summary (duckrun sorted)
+        env:
+          BASE_SORT: ${{ inputs.base_sort }}
+        run: python benchmark/cluster_base.py
+
       - name: 🚀 Deploy vorder semantic model (benchmark/, NOT the demo)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           fab config set encryption_fallback_enabled true
-          # Federated (OIDC) login for fab — same as the demo pipeline, but here it deploys only the
-          # experiment's benchmark/*.SemanticModel, keeping the demo's deploy.py untouched.
+          # Federated (OIDC) login for fab — deploys only the experiment's benchmark/*.SemanticModel.
           $fed = (Invoke-RestMethod -Uri "$env:ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" -Headers @{ Authorization = "bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" }).value
           fab auth login -t ${{ secrets.AZURE_TENANT_ID }} -u ${{ secrets.AZURE_CLIENT_ID }} --federated-token $fed
           python benchmark/deploy_vorder.py --env ${{ inputs.env }}
 
       - name: 📊 Table stats (duckrun) — fct_summary vs fct_summary_vorder
-        # Nice-to-have — never let a stats hiccup block the benchmark below.
-        continue-on-error: true
-        shell: pwsh
+        continue-on-error: true   # nice-to-have; never block the benchmark
         env:
           PYTHONIOENCODING: utf-8
-        run: |
-          $ErrorActionPreference = "Stop"
-          # Resolve the lakehouse OneLake Tables path: ws id from deploy_config.yml, lakehouse id from the Fabric API.
-          $meta = python -c "import yaml, json; c = yaml.safe_load(open('deploy_config.yml')); e = {**c.get('defaults', {}), **c['${{ inputs.env }}']}; print(json.dumps({'ws': e['ws'], 'lh': e['lakehouse_name']}))" | ConvertFrom-Json
-          $lhs = az rest --method get --resource "https://api.fabric.microsoft.com" --url "https://api.fabric.microsoft.com/v1/workspaces/$($meta.ws)/lakehouses" | ConvertFrom-Json
-          $lhId = ($lhs.value | Where-Object { $_.displayName -eq $meta.lh }).id
-          if (-not $lhId) { throw "Could not find lakehouse '$($meta.lh)' in workspace $($meta.ws)" }
-          $env:ONELAKE_TABLES_PATH = "abfss://$($meta.ws)@onelake.dfs.fabric.microsoft.com/$lhId/Tables"
-          # Mint a OneLake storage token and pass it explicitly — duckrun's token auto-discovery
-          # isn't wired on a bare runner, so hand it the bearer token via storage_options.
-          $env:ONELAKE_TOKEN = az account get-access-token --resource "https://storage.azure.com/" --query accessToken -o tsv
-          if (-not $env:ONELAKE_TOKEN) { throw "failed to mint OneLake storage token" }
-          echo "::add-mask::$env:ONELAKE_TOKEN"
-          python benchmark/table_stats.py
+        run: python benchmark/table_stats.py
 
       - name: 🔍 Benchmark both models over XMLA
-        shell: pwsh
         env:
           PYTHONNET_RUNTIME: coreclr
           PYTHONIOENCODING: utf-8
           BENCH_RUNS: ${{ inputs.runs }}
           BENCH_COLD: ${{ inputs.cold }}
           BENCH_GAP_SECONDS: ${{ inputs.gap_seconds }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          # Resolve the target workspace: id from deploy_config.yml, then name from the Power BI API.
-          $wsId = python -c "import yaml; c = yaml.safe_load(open('deploy_config.yml')); print({**c.get('defaults', {}), **c['${{ inputs.env }}']}['ws'])"
-          $groups = az rest --method get --resource "https://analysis.windows.net/powerbi/api" --url "https://api.powerbi.com/v1.0/myorg/groups?`$filter=id eq '$wsId'" | ConvertFrom-Json
-          $wsName = $groups.value[0].name
-          if (-not $wsName) { throw "Could not resolve workspace name for id $wsId (are you a member?)" }
-          $token = az account get-access-token --resource "https://analysis.windows.net/powerbi/api" --query accessToken -o tsv
-          echo "::add-mask::$token"
-          $env:PBI_WORKSPACE = $wsName
-          $env:PBI_TOKEN = $token
-          python benchmark/xmla_compare.py
+        run: python benchmark/xmla_compare.py
