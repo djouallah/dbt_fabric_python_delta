@@ -1,6 +1,7 @@
 """Benchmark two semantic models by running the SAME heavy DAX queries against each
-over the XMLA endpoint and timing them — to see whether the `_vorder` model (which
-reads a Fabric V-Order copy of the fact) is faster in Direct Lake than the delta-rs base.
+over the XMLA endpoint and timing them — to compare the `_optimized` model (a duckrun-
+clustered copy of the fact) against the `_vorder` model (a Fabric Spark V-Order copy).
+Both are derived from the same pristine base fct_summary, so this is apples-to-apples.
 
 NOT a correctness check — both models read the same data, so the numbers are identical
 by construction. What differs is the Delta layout, which changes how much the Direct Lake
@@ -161,13 +162,15 @@ def bench_model(workspace, model, token, runs, want_cold):
 
 def discover_models():
     repo = Path(__file__).resolve().parent.parent  # this script lives in benchmark/
-    # Base model lives in the demo (fabric_items/); the vorder variant is experiment-only (benchmark/).
+    # Benchmark ONLY the experiment's derived models (benchmark/): optimized (duckrun-clustered)
+    # vs vorder (Fabric Spark V-Order). Both are built from the same pristine base fct_summary,
+    # so this is apples-to-apples. The demo base model in fabric_items/ is intentionally excluded.
     names = sorted(p.name.removesuffix(".SemanticModel")
-                   for d in ("fabric_items", "benchmark")
-                   for p in (repo / d).glob("*.SemanticModel"))
+                   for p in (repo / "benchmark").glob("*.SemanticModel"))
     if len(names) < 2:
-        sys.exit(f"Need at least 2 semantic models to benchmark, found {len(names)}: {names}")
-    base = min(names, key=len)
+        sys.exit(f"Need at least 2 benchmark semantic models, found {len(names)}: {names}")
+    # Reference = optimized (duckrun); challenger = vorder. Ratio reads base/vorder.
+    base = next((n for n in names if n.endswith("_optimized")), min(names, key=len))
     return base, [n for n in names if n != base]
 
 

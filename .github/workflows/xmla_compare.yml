@@ -1,10 +1,10 @@
 name: 🔍 XMLA benchmark semantic models
 
-# Manual only. Runs a suite of heavy DAX queries against every semantic model in
-# fabric_items/ over the XMLA endpoint (ADOMD.NET) and TIMES them — to see whether the
-# _vorder model (Fabric V-Order fact) is faster in Direct Lake than the delta-rs base. Same data, so
-# numbers are identical; only speed differs. Uses XMLA, NOT the throttled /executeQueries
-# REST endpoint. Runs on windows-latest where ADOMD.NET loads cleanly.
+# Manual only. Runs a suite of heavy DAX queries over the XMLA endpoint (ADOMD.NET) against the
+# two benchmark/ models and TIMES them — the _optimized model (duckrun-clustered fact) vs the
+# _vorder model (Fabric Spark V-Order fact). Both are derived from the same pristine base
+# fct_summary, so numbers are identical; only speed differs. Uses XMLA, NOT the throttled
+# /executeQueries REST endpoint. Runs on windows-latest where ADOMD.NET loads cleanly.
 on:
   workflow_dispatch:
     inputs:
@@ -24,8 +24,8 @@ on:
         description: "idle seconds between the base and vorder benchmarks (>5min CU smoothing => clean gap in the capacity chart)"
         type: string
         default: "300"
-      base_sort:
-        description: "duckrun sort for the delta-rs base rebuild ('auto' recommender, or cols like 'date, time')"
+      opt_sort:
+        description: "duckrun sort for the optimized copy ('auto' recommender, or cols like 'date, time')"
         type: string
         default: "auto"
 
@@ -93,20 +93,20 @@ jobs:
             "PBI_WORKSPACE=$wsName"
           ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: ⚡ Build V-Order table on Fabric Spark (Livy) — FIRST, from the clean summary
-        # Run BEFORE the duckrun re-cluster so the V-Order copy is taken off the untouched
-        # dbt summary — nobody can say duckrun's clustering pre-conditioned the vorder input.
+      - name: ⚡ Build V-Order table on Fabric Spark (Livy) — from the pristine base summary
+        # Both derived tables (vorder here, optimized next) are built from the untouched base
+        # fct_summary and never mutate it, so the benchmark only ever assumes the base exists.
         env:
           PYTHONIOENCODING: utf-8
         run: python benchmark/livy_vorder.py
 
-      - name: 🧭 Re-cluster base summary (duckrun sorted)
+      - name: 🧭 Build optimized summary table (duckrun sorted, base untouched)
         env:
           PYTHONIOENCODING: utf-8
-          BASE_SORT: ${{ inputs.base_sort }}
-        run: python benchmark/cluster_base.py
+          OPT_SORT: ${{ inputs.opt_sort }}
+        run: python benchmark/build_optimized.py
 
-      - name: 🚀 Deploy vorder semantic model (benchmark/, NOT the demo)
+      - name: 🚀 Deploy benchmark semantic models (optimized + vorder, NOT the demo)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -116,7 +116,7 @@ jobs:
           fab auth login -t ${{ secrets.AZURE_TENANT_ID }} -u ${{ secrets.AZURE_CLIENT_ID }} --federated-token $fed
           python benchmark/deploy_vorder.py --env ${{ inputs.env }}
 
-      - name: 📊 Table stats (duckrun) — fct_summary vs fct_summary_vorder
+      - name: 📊 Table stats (duckrun) — fct_summary_optimized vs fct_summary_vorder
         continue-on-error: true   # nice-to-have; never block the benchmark
         env:
           PYTHONIOENCODING: utf-8
