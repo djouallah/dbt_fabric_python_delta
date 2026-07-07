@@ -86,15 +86,27 @@ def _load_adomd(adomd_dir: str):
     print(f"Loaded ADOMD from {hits[0]}")
 
 
-def open_conn(workspace: str, model: str, token: str):
+def open_conn(workspace: str, model: str, token: str, tries=5, delay=15):
+    """Open an XMLA connection, retrying transient drops. The XMLA endpoint can forcibly close an
+    idle connection (SocketException 10054) — especially after the idle gap or under capacity
+    throttling — so one blip shouldn't kill the run."""
     from Microsoft.AnalysisServices.AdomdClient import AdomdConnection
     conn_str = (
         f"Data Source=powerbi://api.powerbi.com/v1.0/myorg/{workspace};"
         f"Initial Catalog={model};User ID=;Password={token};"
     )
-    conn = AdomdConnection(conn_str)
-    conn.Open()
-    return conn
+    last = None
+    for i in range(1, tries + 1):
+        try:
+            conn = AdomdConnection(conn_str)
+            conn.Open()
+            return conn
+        except Exception as e:
+            last = e
+            print(f"  open_conn {i}/{tries} failed ({str(e).splitlines()[0][:100]}); "
+                  f"retrying in {delay}s...", flush=True)
+            time.sleep(delay)
+    raise last
 
 
 def _refresh(conn, model, kind):
@@ -317,7 +329,12 @@ def main():
             print(f"\n⏳ Idle gap: sleeping {gap}s before {model} so the Fabric capacity chart "
                   f"shows a clean base → gap → {model} separation...", flush=True)
             time.sleep(gap)
-        opt_res, opt_cold = bench_model(workspace, model, token, runs, want_cold)
+        try:
+            opt_res, opt_cold = bench_model(workspace, model, token, runs, want_cold)
+        except Exception as e:
+            print(f"  {model}: benchmark failed ({str(e).splitlines()[0][:120]}) — skipping.",
+                  flush=True)
+            continue
         if opt_res is None:
             print(f"  {model} never became queryable — skipping its comparison.", flush=True)
             continue
