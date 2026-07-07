@@ -83,9 +83,22 @@ def main():
         "(smaller ⇒ finer granularity, usually faster Direct Lake cold transcode)._",
         summ.columns, summ.fetchall()))
 
-    # --- 2) Per-row-group detail (detailed=True) — one row per parquet row group ---
+    # --- 2) Full detail (detailed=True) — raw parquet_metadata, one row per (row group × column) ---
     det = con.get_stats("fct_summary*", detailed=True)
-    idx = {c: i for i, c in enumerate(det.columns)}
+    det_cols, det_rows = det.columns, det.fetchall()   # materialize once (network reads)
+
+    # Dump the FULL per-column-chunk detail to CSV (download into Excel / pandas). Uploaded as a
+    # workflow artifact by the "Upload stats CSV" step.
+    import csv as _csv
+    csv_path = os.environ.get("STATS_CSV", "stats_detailed.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = _csv.writer(f)
+        w.writerow(det_cols)
+        w.writerows(det_rows)
+    print(f"\nwrote detailed stats CSV -> {os.path.abspath(csv_path)} "
+          f"({len(det_rows)} rows × {len(det_cols)} cols)")
+
+    idx = {c: i for i, c in enumerate(det_cols)}
 
     def col(*names):
         for n in names:
@@ -100,7 +113,7 @@ def main():
 
     # parquet_metadata is one row per (row group × column) — collapse to one row per row group.
     seen, order = {}, []
-    for r in det.fetchall():
+    for r in det_rows:
         key = (r[i_tbl], r[i_file], r[i_rg])
         if key not in seen:
             seen[key] = (r[i_rows] if i_rows is not None else None,
