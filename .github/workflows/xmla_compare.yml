@@ -44,7 +44,7 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install deps
-        run: pip install pythonnet pyyaml duckrun
+        run: pip install pythonnet pyyaml duckrun ms-fabric-cli
 
       - name: 🧩 Install ADOMD.NET client (NuGet)
         shell: pwsh
@@ -59,6 +59,17 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
+
+      - name: 🚀 Deploy vorder semantic model (benchmark/, NOT the demo)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          fab config set encryption_fallback_enabled true
+          # Federated (OIDC) login for fab — same as the demo pipeline, but here it deploys only the
+          # experiment's benchmark/*.SemanticModel, keeping the demo's deploy.py untouched.
+          $fed = (Invoke-RestMethod -Uri "$env:ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" -Headers @{ Authorization = "bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" }).value
+          fab auth login -t ${{ secrets.AZURE_TENANT_ID }} -u ${{ secrets.AZURE_CLIENT_ID }} --federated-token $fed
+          python deploy_vorder.py --env ${{ inputs.env }}
 
       - name: 📊 Table stats (duckrun) — fct_summary vs fct_summary_vorder
         # Nice-to-have — never let a stats hiccup block the benchmark below.
