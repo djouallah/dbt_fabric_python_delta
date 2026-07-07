@@ -26,19 +26,27 @@ FORCE = os.environ.get("FORCE_REBUILD", "false").strip().lower() == "true"
 
 # One Spark cell: enable V-Order, then overwrite mart.fct_summary_vorder from the delta-rs base.
 # The Livy session is created under the lakehouse, so mart.* resolves to its schema-enabled tables.
-# Skip the (expensive) rebuild if the table already exists, unless FORCE_REBUILD.
-SPARK_CODE = f'''
-force = {FORCE}
-if (not force) and spark.catalog.tableExists("mart.fct_summary_vorder"):
-    print("VORDER_SKIP_EXISTS rows=" + str(spark.read.table("mart.fct_summary_vorder").count()))
-else:
-    spark.conf.set("spark.sql.parquet.vorder.default", "true")
-    (spark.read.table("mart.fct_summary")
-          .write.mode("overwrite").format("delta")
-          .option("parquet.vorder.enabled", "true")
-          .saveAsTable("mart.fct_summary_vorder"))
-    print("VORDER_WRITE_OK rows=" + str(spark.read.table("mart.fct_summary_vorder").count()))
+SPARK_CODE = '''
+spark.conf.set("spark.sql.parquet.vorder.default", "true")
+(spark.read.table("mart.fct_summary")
+      .write.mode("overwrite").format("delta")
+      .option("parquet.vorder.enabled", "true")
+      .saveAsTable("mart.fct_summary_vorder"))
+print("VORDER_WRITE_OK rows=" + str(spark.read.table("mart.fct_summary_vorder").count()))
 '''
+
+
+def vorder_exists():
+    """Cheap LOCAL existence check over OneLake (duckrun/duckdb) — so we can skip spinning up a
+    Livy Spark session entirely when the table is already there. NO Spark involved."""
+    import duckrun
+    con = duckrun.connect(os.environ["ONELAKE_TABLES_PATH"] + "/mart",
+                          storage_options={"bearer_token": os.environ["ONELAKE_TOKEN"]})
+    try:
+        con.sql("select 1 from mart.fct_summary_vorder limit 1").fetchone()
+        return True
+    except Exception:
+        return False
 
 
 def _req(method, path, body=None):
@@ -71,6 +79,10 @@ def _poll_state(path, label, ok, bad, timeout, interval):
 
 
 def main():
+    if not FORCE and vorder_exists():
+        print("mart.fct_summary_vorder already exists — skipping Livy/Spark entirely "
+              "(set rebuild=true to rebuild).", flush=True)
+        return
     print("Creating Livy session...", flush=True)
     sid = _req("POST", "sessions",
                {"name": "ci-vorder",
