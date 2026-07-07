@@ -92,7 +92,7 @@ def main():
                     tb = "\n".join(out.get("traceback", []) or [])
                     sys.exit(f"Spark error {out.get('ename')}: {out.get('evalue')}\n{tb}")
                 print(out.get("data", {}).get("text/plain", ""), flush=True)
-                print("✅ V-Order table build complete.", flush=True)
+                print("V-Order table build complete.", flush=True)
                 return
             if st in ("error", "cancelled", "cancelling"):
                 sys.exit(f"statement entered '{st}'")

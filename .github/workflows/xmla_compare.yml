@@ -96,10 +96,13 @@ jobs:
       - name: ⚡ Build V-Order table on Fabric Spark (Livy) — FIRST, from the clean summary
         # Run BEFORE the duckrun re-cluster so the V-Order copy is taken off the untouched
         # dbt summary — nobody can say duckrun's clustering pre-conditioned the vorder input.
+        env:
+          PYTHONIOENCODING: utf-8
         run: python benchmark/livy_vorder.py
 
       - name: 🧭 Re-cluster base summary (duckrun sorted)
         env:
+          PYTHONIOENCODING: utf-8
           BASE_SORT: ${{ inputs.base_sort }}
         run: python benchmark/cluster_base.py
 
