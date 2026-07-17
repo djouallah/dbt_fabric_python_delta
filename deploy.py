@@ -1,10 +1,10 @@
 import argparse
 import json
-import re
-import subprocess
-import time
+import os
+import tempfile
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+
+import duckrun
 import yaml
 
 parser = argparse.ArgumentParser()
@@ -27,95 +27,28 @@ cfg        = {**all_cfg.get("defaults", {}), **all_cfg[args.env]}
 WS_ID      = cfg["ws"]
 LH_NAME    = cfg["lakehouse_name"]
 dbt        = root / "dbt"
+fabric_items = root / "fabric_items"
 
 # Lakehouse is always provisioned (it holds the data); the scope is binary — NONE (lakehouse
 # only) or FULL (every Fabric item). Default is NONE.
 print(f"Deploy scope: {'FULL (semantic model + notebook/VL/pipeline)' if args.full else 'NONE (lakehouse only)'}")
 
-# Derive item names from fabric_items/ folder names
-fabric_items = root / "fabric_items"
+
 def find_item(item_type):
+    """Derive an item's display name from its fabric_items/<name>.<Type> folder."""
     matches = list(fabric_items.glob(f"*.{item_type}"))
     if len(matches) != 1:
         raise SystemExit(f"Expected exactly one {item_type} in fabric_items/, found {len(matches)}")
     return matches[0].name.removesuffix(f".{item_type}")
 
-NB_NAME  = find_item("Notebook")
-PL_NAME  = find_item("DataPipeline")
-SM_NAME  = find_item("SemanticModel")
 
-# Resolve workspace name from ID (ws can be renamed; ID is stable)
-result = subprocess.run(
-    ["fab", "api", "-X", "get", f"workspaces/{WS_ID}"],
-    capture_output=True, text=True, check=True, cwd=str(root),
-)
-ws = json.loads(result.stdout)["text"]["displayName"]
-print(f"Resolved workspace: {ws} ({WS_ID})")
+# duckrun uses FABRIC_TOKEN / POWERBI_TOKEN from the env in CI, or an `az login` session locally.
+ws = duckrun.workspace(WS_ID)
 
-LAKEHOUSE = f"{ws}.Workspace/{LH_NAME}.Lakehouse"
-NOTEBOOK  = f"{ws}.Workspace/{NB_NAME}.Notebook"
-PIPELINE  = f"{ws}.Workspace/{PL_NAME}.DataPipeline"
-SEMANTIC_MODEL = f"{ws}.Workspace/{SM_NAME}.SemanticModel"
-
-
-def fab(args, cwd=root):
-    subprocess.run(["fab"] + args, check=True, cwd=str(cwd))
-
-
-# Extract source workspace_id and lakehouse_id from the bim file OneLake URL
-bim_path = root / "fabric_items" / f"{SM_NAME}.SemanticModel" / "model.bim"
-bim_text = bim_path.read_text()
-url_match = re.search(r'onelake\.dfs\.fabric\.microsoft\.com/([0-9a-f-]{36})/([0-9a-f-]{36})', bim_text)
-if not url_match:
-    raise SystemExit("Could not find OneLake URL with workspace/lakehouse GUIDs in model.bim")
-source_ws_id = url_match.group(1)
-source_lh_id = url_match.group(2)
-print(f"Source workspace ID: {source_ws_id}")
-print(f"Source lakehouse ID: {source_lh_id}")
-
-
-
-def get_item_id(path):
-    """Get an item's ID using fab get -q id."""
-    r = subprocess.run(["fab", "get", path, "-q", "id"],
-                       capture_output=True, text=True, check=True, cwd=str(root))
-    return r.stdout.strip()
-
-
-def fab_deploy(item_types):
-    """Write a temporary fab deploy config and run deploy, then clean up."""
-    content = (
-        'core:\n'
-        f'  workspace: "{ws}"\n'
-        '  repository_directory: "./fabric_items"\n'
-        '  item_types_in_scope:\n'
-    )
-    for t in item_types:
-        content += f'    - {t}\n'
-    tmp = root / "_fab_deploy_tmp.yml"
-    tmp.write_text(content)
-    try:
-        fab(["deploy", "--config", tmp.name, "-f"])
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-fab(["config", "set", "folder_listing_enabled", "true"])
-
-# 1. Ensure lakehouse exists with schemas enabled
+# 1. Ensure the lakehouse exists (idempotent; schema-enabled), returns its item id.
 print("=== 1. Create lakehouse ===")
-exists_result = subprocess.run(["fab", "exists", LAKEHOUSE],
-                               capture_output=True, text=True, cwd=str(root))
-if "true" not in exists_result.stdout.lower():
-    fab(["create", LAKEHOUSE, "-P", "enableSchemas=true"])
-    print("New lakehouse — waiting 60s for provisioning...")
-    time.sleep(60)
-else:
-    print(f"Lakehouse '{LH_NAME}' already exists, skipping create.")
-
-# Get target lakehouse ID (create above ensures it exists)
-target_lh_id = get_item_id(LAKEHOUSE)
-print(f"Target lakehouse ID: {target_lh_id}")
+lh_id = ws.create_lakehouse(LH_NAME)
+print(f"Lakehouse '{LH_NAME}' id: {lh_id}")
 
 # Scope NONE stops here: the lakehouse is the only always-required item. Everything below
 # (semantic model + notebook/VL/pipeline) is the FULL scope, opted into with --full.
@@ -123,192 +56,68 @@ if not args.full:
     print("Scope NONE — lakehouse ensured, skipping all Fabric item deploys (pass --full to deploy them).")
     raise SystemExit(0)
 
+NB_NAME = find_item("Notebook")
+PL_NAME = find_item("DataPipeline")
+SM_NAME = find_item("SemanticModel")
+VL_NAME = find_item("VariableLibrary")
 
-# 2. Deploy notebook + variable library (variables.json rewritten per env, reverted after).
-#    These drive the in-Fabric orchestration demo; GitHub Actions is the real orchestrator.
-print("=== 2. Deploy notebook + variable library ===")
-vl_path = fabric_items / "deploy_config.VariableLibrary" / "variables.json"
-vl_variables = {
-    "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/variables/1.0.0/schema.json",
-    "variables": [
-        {"name": "download_limit", "type": "String", "value": cfg["download_limit"]},
-        {"name": "process_limit",  "type": "String", "value": cfg["process_limit"]},
-        {"name": "lakehouse_name", "type": "String", "value": LH_NAME},
-        {"name": "workspace_id",   "type": "String", "value": WS_ID},
-    ],
-}
-vl_path.write_text(json.dumps(vl_variables, indent=4))
-try:
-    fab_deploy(["Notebook", "VariableLibrary"])
-finally:
-    subprocess.run(["git", "checkout", str(vl_path)], cwd=str(root))
+# Item display names must be passed explicitly — deploy() otherwise defaults to the source
+# filename stem (notebook-content / variables / pipeline-content / model), not the item name.
 
-# Get target notebook ID (needed for pipeline fab set later)
-target_nb_id = get_item_id(NOTEBOOK)
-print(f"Target notebook ID:  {target_nb_id}")
+# 2. Deploy notebook (capture its new id for the pipeline notebook-reference patch below).
+print("=== 2. Deploy notebook ===")
+nb_id = ws.deploy(str(fabric_items / f"{NB_NAME}.Notebook" / "notebook-content.ipynb"),
+                  name=NB_NAME, overwrite=True)
+print(f"Notebook '{NB_NAME}' id: {nb_id}")
 
-# 3. Copy dbt files to OneLake (the notebook reads the project from Files/dbt).
-# Skip build artifacts (target/, logs/) — the notebook regenerates them on every run,
-# and they dominate the per-file `fab cp` subprocess overhead.
-print("=== 3. Copy dbt files to OneLake ===")
-SKIP_DIRS = {"target", "logs"}
-files = [f for f in dbt.rglob("*")
-         if f.is_file() and not (set(f.relative_to(dbt).parts) & SKIP_DIRS)]
+# 3. Deploy variable library — inject the env-specific values at deploy time (no file edit,
+#    no git-checkout restore).
+print("=== 3. Deploy variable library ===")
+ws.deploy(str(fabric_items / f"{VL_NAME}.VariableLibrary" / "variables.json"),
+          name=VL_NAME, overwrite=True, variables={
+              "download_limit": cfg["download_limit"],
+              "process_limit":  cfg["process_limit"],
+              "lakehouse_name": LH_NAME,
+              "workspace_id":   WS_ID,
+          })
 
-dirs = set()
-for f in files:
-    p = f.relative_to(root).parent
-    while p.parts:
-        dirs.add(p.as_posix())
-        p = p.parent
+# 4. Copy the dbt project to OneLake Files/dbt (the notebook reads the project from there).
+#    duckrun streams every file in-process over obstore and raises on failure.
+print("=== 4. Copy dbt files to OneLake ===")
+files = duckrun.connect(
+    f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables",
+    storage_options={"bearer_token": os.environ["ONELAKE_TOKEN"]})
+files.copy(str(dbt), "dbt", overwrite=True)
 
-for d in sorted(dirs):
-    subprocess.run(["fab", "mkdir", f"{LAKEHOUSE}/Files/{d}"], cwd=str(root))
-
-def copy_file(f):
-    rel = f.relative_to(root)
-    fab(["cp", rel.as_posix(), f"{LAKEHOUSE}/Files/{rel.parent.as_posix()}/", "-f"])
-
-with ThreadPoolExecutor(max_workers=8) as executor:
-    # Consume the iterator so a failed `fab cp` re-raises here. Bare executor.map(...)
-    # is lazy and never iterated, which silently swallowed copy failures — that is how
-    # the dbt macros/ folder vanished from a workspace while the deploy reported success.
-    list(executor.map(copy_file, files))
-
-# 4. (Removed) Previously ran the notebook to create tables — CI's dbt run
-# already wrote Delta tables directly to the same lakehouse via the duckrun
-# adapter (delta-rs), so re-running the notebook here is redundant. The notebook
-# is still deployed and exercised by the scheduled DataPipeline.
-
-# 5. Deploy semantic model (replace GUIDs in bim, deploy, restore)
-# Skips fab_deploy if the post-substitution .bim matches the one cached in
-# OneLake from the previous deploy (Files/semanticmodel/<SM_NAME>.bim).
+# 5. Deploy semantic model — duckrun repoints the OneLake workspace/lakehouse GUIDs baked into
+#    the Direct Lake model to LH_NAME and refreshes it (reframe) before returning.
 print("=== 5. Deploy semantic model ===")
-bim_path.write_text(bim_text.replace(source_ws_id, WS_ID).replace(source_lh_id, target_lh_id))
-local_bim = bim_path.read_bytes()
-remote_bim_path = f"{LAKEHOUSE}/Files/semanticmodel/{SM_NAME}.bim"
+ws.deploy(str(fabric_items / f"{SM_NAME}.SemanticModel" / "model.bim"),
+          name=SM_NAME, lakehouse=LH_NAME, overwrite=True)
 
-cache_path = root / "_remote_bim_cache.bim"
-cache_path.unlink(missing_ok=True)
-download = subprocess.run(
-    ["fab", "cp", remote_bim_path, cache_path.as_posix(), "-f"],
-    capture_output=True, text=True, cwd=str(root),
-)
-# The cached .bim only proves the DEFINITION is unchanged — not that the model still
-# exists. If the SemanticModel was deleted in the portal, the cache would otherwise skip
-# the deploy and step 7's refresh would 404. So require the item to actually exist before
-# trusting the cache shortcut.
-sm_exists = subprocess.run(["fab", "exists", SEMANTIC_MODEL],
-                           capture_output=True, text=True, cwd=str(root))
-unchanged = (
-    "true" in sm_exists.stdout.lower()
-    and download.returncode == 0
-    and cache_path.exists()
-    and cache_path.read_bytes() == local_bim
-)
-cache_path.unlink(missing_ok=True)
-
-try:
-    if unchanged:
-        print("SemanticModel definition matches cached deploy, skipping fab_deploy.")
-    else:
-        for attempt in range(1, 4):
-            try:
-                fab_deploy(["SemanticModel"])
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 3:
-                    raise
-                print(f"SemanticModel deploy attempt {attempt} failed (likely mid-refresh); waiting 45s and retrying...")
-                time.sleep(45)
-        subprocess.run(["fab", "mkdir", f"{LAKEHOUSE}/Files/semanticmodel"], cwd=str(root))
-        fab(["cp", str(bim_path), remote_bim_path, "-f"])
-finally:
-    subprocess.run(["git", "checkout", str(bim_path)], cwd=str(root))
-
-# 6. Deploy DataPipeline + set notebook reference + schedule
+# 6. Deploy data pipeline — point both TridentNotebook activities (low-core run + high-core
+#    retry) at the freshly deployed notebook and the target workspace. duckrun deploys the
+#    pipeline verbatim, so patch the notebook reference in-memory first.
 print("=== 6. Deploy pipeline ===")
-fab_deploy(["DataPipeline"])
-
-# 6b. Set notebook reference on pipeline via fab set
-# The pipeline has two TridentNotebook activities (low-core run at [0] + high-core
-# retry on the Failed path at [1]), both carrying the same dev GUIDs — patch both.
-# Indices are fixed by pipeline-content.json; `fab get -q` can't navigate into the
-# encoded definition payload, so we set by known index (same path `fab set` accepts).
-print("=== 6b. Set notebook on pipeline ===")
-for i in (0, 1):
-    fab(["set", PIPELINE, "-q",
-         f"definition.parts[0].payload.properties.activities[{i}].typeProperties.notebookId",
-         "-i", target_nb_id, "-f"])
-    fab(["set", PIPELINE, "-q",
-         f"definition.parts[0].payload.properties.activities[{i}].typeProperties.workspaceId",
-         "-i", WS_ID, "-f"])
-
-# Reconcile to EXACTLY ONE schedule on the pipeline. Detection must be reliable
-# or schedules pile up: the old `fab job run-list <pl> --schedule` queries
-# jobType=Execute, which the Fabric API always rejects with 400
-# InvalidConfiguration for pipelines, so every deploy saw "no schedule" and
-# created another one. The correct listing is the REST API with jobType=Pipeline.
-# Note: that list 400s if ANY existing schedule has a config it can't serialize
-# (one odd-type schedule poisons the whole list) — in that case we must NOT act
-# (can't enumerate ids to dedupe, and creating would only add to the pile), so
-# skip and let the operator remove the offending schedule in the portal.
-pl_id = get_item_id(PIPELINE)
-sched_url = f"workspaces/{WS_ID}/items/{pl_id}/jobs/Pipeline/schedules"
-result = subprocess.run(["fab", "api", "-X", "get", sched_url],
-                        capture_output=True, text=True, cwd=str(root))
+pl_path = fabric_items / f"{PL_NAME}.DataPipeline" / "pipeline-content.json"
+pl = json.loads(pl_path.read_text())
+for act in pl["properties"]["activities"]:
+    tp = act.get("typeProperties", {})
+    if "notebookId" in tp:
+        tp["notebookId"] = nb_id
+    if "workspaceId" in tp:
+        tp["workspaceId"] = WS_ID
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    json.dump(pl, f)
+    tmp_pl = f.name
 try:
-    body = json.loads(result.stdout)
-except json.JSONDecodeError:
-    body = {}
-code = body.get("status_code")
-text = body.get("text") if isinstance(body.get("text"), dict) else {}
+    ws.deploy(tmp_pl, name=PL_NAME, overwrite=True)
+finally:
+    os.unlink(tmp_pl)
 
-if code != 200:
-    print(f"::warning::schedule list returned {code} "
-          f"({text.get('errorCode')}: {text.get('message')}). Skipping schedule "
-          f"management to avoid duplicates — remove the offending schedule in the "
-          f"Fabric portal (Pipeline → Schedule) so the list works again.")
-else:
-    schedules = text.get("value") or []
-    if not schedules:
-        print("No existing schedule, creating one.")
-        fab(["job", "run-sch", PIPELINE,
-             "--type", "cron", "--interval", cfg["schedule_interval"],
-             "--start", cfg["schedule_start"], "--end", cfg["schedule_end"], "--enable"])
-    else:
-        # Keep one (prefer an enabled Cron, oldest first), remove the rest.
-        schedules.sort(key=lambda s: (
-            (s.get("configuration") or {}).get("type") != "Cron",
-            not s.get("enabled"),
-            s.get("createdDateTime", ""),
-        ))
-        keep, extras = schedules[0], schedules[1:]
-        if extras:
-            print(f"Pipeline has {len(schedules)} schedules; keeping {keep['id']}, "
-                  f"removing {len(extras)} extra(s).")
-            for s in extras:
-                fab(["job", "run-rm", PIPELINE, "--id", s["id"], "-f"])
-        else:
-            print(f"Pipeline already has exactly one schedule ({keep['id']}), skipping.")
-
-
-# 7. Refresh semantic model (LAST step — OneLake security/permission propagation
-# lags behind deploy, so an immediate refresh after the SM deploy can fail with
-# permission errors. Microsoft documents role-definition changes taking ~5 min to
-# propagate, so running it last + retrying covers that window.)
-print("=== 7. Refresh semantic model ===")
-sm_id = get_item_id(SEMANTIC_MODEL)
-for attempt in range(1, 4):
-    try:
-        fab(["api", "-A", "powerbi", "-X", "post", f"groups/{WS_ID}/datasets/{sm_id}/refreshes"])
-        break
-    except subprocess.CalledProcessError:
-        if attempt == 3:
-            raise
-        print(f"Refresh attempt {attempt} failed (likely OneLake security still "
-              f"propagating); waiting 60s and retrying...")
-        time.sleep(60)
-
+# 7. Schedule the pipeline (idempotent — re-scheduling updates the existing schedule rather
+#    than stacking a duplicate).
+print("=== 7. Schedule pipeline ===")
+ws.schedule(PL_NAME, every=f"{cfg['schedule_interval']}m")
 
 print("=== Deploy complete ===")
