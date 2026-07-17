@@ -20,15 +20,12 @@ permissions:
   pages: write
 
 env:
-  AZURE_TRANSPORT_OPTION_TYPE: curl
-  CURL_CA_INFO: /etc/ssl/certs/ca-certificates.crt
-  # duckrun mints its own tokens (OneLake / Fabric / Power BI) from the GitHub OIDC
-  # JWT via workload-identity federation — no `az login`, no token step. Needs only
-  # the app registration's client/tenant + `id-token: write` (set above).
+  # The only Azure inputs: the OIDC federated identity. duckrun mints every token it
+  # needs (OneLake storage + Fabric control plane + Power BI) by exchanging a fresh
+  # GitHub OIDC assertion — no `az login`, no token step. `id-token: write` (above) +
+  # these two are the whole credential. See duckrun auth._github_oidc_token.
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  # Temporary: make duckrun's auth path print why a token acquisition fails.
-  DUCKRUN_AUTH_DEBUG: "1"
 
 jobs:
   pipeline:
