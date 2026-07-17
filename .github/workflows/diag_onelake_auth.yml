@@ -1,0 +1,95 @@
+name: 🔎 Diag OneLake auth
+
+# Throwaway diagnostic: figure out WHY duckrun's OIDC-minted OneLake storage token
+# 401s the CI dbt read while an az-minted token for the same SP works. Decodes both
+# tokens' claims side-by-side and does a raw OneLake DFS read with each. Manual only.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  WS_ID: 91588e42-0f1c-4e56-bcaa-cbf015b8f312
+  LH_ID: c3804180-a8d8-44af-aa2e-afb901ea07e8
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install duckrun
+        run: pip install duckrun
+
+      - name: Azure federated login (for the az-token comparison)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Mint az storage token (the proven-working path)
+        run: |
+          TOKEN=$(az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv)
+          echo "::add-mask::$TOKEN"
+          echo "AZ_STORAGE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Compare OIDC vs az tokens + raw OneLake reads
+        run: |
+          python - <<'PY'
+          import os, json, base64, urllib.request, urllib.error
+
+          def claims(tok):
+              # Decode the JWT payload (middle segment) without verifying — just to read claims.
+              try:
+                  p = tok.split('.')[1]
+                  p += '=' * (-len(p) % 4)
+                  d = json.loads(base64.urlsafe_b64decode(p))
+              except Exception as e:
+                  return {'_decode_error': repr(e)}
+              # Only non-secret claims. appid/oid identify the SP but aren't secrets like the token.
+              keep = ('aud', 'iss', 'ver', 'appid', 'azp', 'appidacr', 'idtyp', 'oid', 'tid',
+                      'roles', 'scp', 'xms_mirid', 'xms_az_rid')
+              return {k: d.get(k) for k in keep if k in d}
+
+          def onelake_read(tok, label):
+              ws, lh = os.environ['WS_ID'], os.environ['LH_ID']
+              # Raw OneLake DFS: list the lakehouse Files directory. 200 => token accepted.
+              url = (f"https://onelake.dfs.fabric.microsoft.com/{ws}"
+                     f"?resource=filesystem&directory={lh}/Files&recursive=false")
+              req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok})
+              try:
+                  r = urllib.request.urlopen(req, timeout=30)
+                  print(f"  {label} raw OneLake read: HTTP {r.status} OK")
+              except urllib.error.HTTPError as e:
+                  www = e.headers.get('WWW-Authenticate', '')
+                  body = e.read()[:300].decode('utf-8', 'replace')
+                  print(f"  {label} raw OneLake read: HTTP {e.code} {e.reason}")
+                  print(f"    WWW-Authenticate: {www}")
+                  print(f"    body: {body}")
+              except Exception as e:
+                  print(f"  {label} raw OneLake read: {type(e).__name__}: {e}")
+
+          print("=== OIDC token (duckrun.auth.get_onelake_token) ===")
+          from duckrun import auth
+          try:
+              oidc = auth.get_onelake_token()
+              print("  claims:", json.dumps(claims(oidc), indent=2))
+              onelake_read(oidc, "OIDC")
+          except Exception as e:
+              print(f"  get_onelake_token raised: {type(e).__name__}: {e}")
+
+          print("=== az token (az account get-access-token --resource storage.azure.com) ===")
+          az = os.environ.get('AZ_STORAGE_TOKEN', '')
+          if az:
+              print("  claims:", json.dumps(claims(az), indent=2))
+              onelake_read(az, "az")
+          else:
+              print("  (no az token in env)")
+          PY
