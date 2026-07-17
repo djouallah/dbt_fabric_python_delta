@@ -27,6 +27,8 @@ env:
   # the app registration's client/tenant + `id-token: write` (set above).
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  # Temporary: make duckrun's auth path print why a token acquisition fails.
+  DUCKRUN_AUTH_DEBUG: "1"
 
 jobs:
   pipeline:
