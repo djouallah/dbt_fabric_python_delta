@@ -1,55 +1,83 @@
-# Fabric Deploy — Lessons Learned
+# Fabric CLI Deploy — Lessons Learned
 
-`deploy.py` deploys the Fabric items through the **duckrun workspace API**
-(`duckrun.workspace(...)`), not the `fab` CLI. GitHub Actions is the real orchestrator;
-the notebook/pipeline are an in-Fabric scheduling demo. Scope is binary: NONE (lakehouse
-only, default) vs FULL (`--full`, every item).
+## parameter.yml
 
-## Tokens (no `fab auth login`, no `az login`, no token step)
+### replace_value token resolution
+`extract_replace_value` only resolves `$workspace.id` / `$items.*` if the **entire string starts with `$`**.
+Embedding tokens inside a URL string does NOT work:
+```yaml
+# WRONG — $workspace.id is never resolved
+replace_value:
+  _ALL_: "https://onelake.dfs.fabric.microsoft.com/$workspace.id/$items.Lakehouse.data.$id/"
 
-duckrun mints every token it needs itself — OneLake (storage), Fabric control plane, and
-Power BI (semantic-model refresh) — directly from the GitHub Actions **OIDC JWT** via
-workload-identity federation (`_github_oidc_token`, first in each acquisition chain). The
-workflow just needs `id-token: write` and `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` in the env;
-there is **no** `azure/login` step and **no** `az account get-access-token` minting. Tokens
-are acquired lazily per audience, so a `deploy=none` run never touches the Power BI scope.
+# CORRECT — replace each GUID separately so replace_value starts with $
+- find_value: "e446a5e7-6666-42ad-a331-0bfef3187fbf"
+  replace_value:
+    _ALL_: "$workspace.id"
+- find_value: "cf8bbf8a-5488-4020-ac8f-293727b447b1"
+  replace_value:
+    _ALL_: "$items.Lakehouse.data.$id"
+```
 
-Locally, an `az login` session covers all three (duckrun falls back to azure-identity's
-`AzureCliCredential`). dbt (`dbt/profiles.yml`) sets **no** `storage_options` token — the
-duckrun adapter auto-acquires the OneLake token the same way.
+### Tokens are ONLY resolved through parameter.yml
+Fabric CLI does NOT resolve `$workspace.id` or `$items.*` tokens inline in content files.
+Content files (e.g. pipeline-content.json) must contain the original dev GUIDs, and
+parameter.yml must have find_replace entries to swap them with `$` tokens.
+```json
+// WRONG — literal token strings end up deployed unresolved
+{ "workspaceId": "$workspace.id", "notebookId": "$items.Notebook.run.$id" }
 
-## What duckrun does for you
+// CORRECT — use dev GUIDs, let parameter.yml replace them
+{ "workspaceId": "e446a5e7-6666-42ad-a331-0bfef3187fbf", "notebookId": "da888b35-..." }
+```
 
-- **`ws.create_lakehouse(name)`** — idempotent, schema-enabled, returns the item id.
-  No `fab exists`/`create`, no post-create sleep.
-- **Item names must be passed explicitly** — `ws.deploy(path, name=...)`. Without `name=`,
-  deploy defaults to the source **filename stem** (`notebook-content` / `variables` /
-  `pipeline-content` / `model`), which is not the item's display name. `deploy.py` derives
-  names from the `fabric_items/<name>.<Type>` folders via `find_item()`.
-- **Semantic model** — `ws.deploy("model.bim", lakehouse=LH_NAME, overwrite=True)`
-  auto-repoints the OneLake workspace/lakehouse GUIDs baked into the Direct Lake model to
-  the target lakehouse **and refreshes** (reframe) before returning. No regex substitution,
-  no bim cache, no separate refresh step. The dev GUIDs stay in the checked-in `model.bim`.
-- **Pipeline** — deployed **verbatim** (no GUID rewrite), so patch the notebook reference
-  in-memory first: set each `properties.activities[*].typeProperties.notebookId` to the id
-  returned by the notebook deploy and `.workspaceId` to the target workspace, then deploy
-  the patched JSON. Deploy the notebook first to get its id.
-- **Variable library** — `ws.deploy("variables.json", variables={...}, overwrite=True)`
-  injects env-specific values at deploy time; no file edit + git-checkout restore.
-- **`ws.schedule(name, every="30m")`** — idempotent, updates the existing schedule instead
-  of stacking duplicates. No list/dedup logic. duckrun sets start=now, end=2099 (so
-  `schedule_start`/`schedule_end` config keys are gone); only `schedule_interval` is read.
-- **`duckrun.connect(tables_path, storage_options={"bearer_token": ONELAKE_TOKEN}).copy(dbt, "dbt", overwrite=True)`**
-  streams the dbt project to `Files/dbt` in-process over obstore and raises on failure
-  (the notebook reads the project from there).
+### $items token format
+Required format: `$items.type.name.$attribute`
+```yaml
+$items.Lakehouse.data.$id    # correct — type=Lakehouse, name=data
+$items.Notebook.run.$id      # correct — type=Notebook, name=run
+$items.data.$id              # wrong — "Invalid $items variable syntax"
+```
+
+### is_regex must be a string
+```yaml
+is_regex: "true"   # correct
+is_regex: true     # wrong — Fabric CLI rejects with "not of type string"
+```
+
+### _ALL_ is the correct universal environment key
+```yaml
+replace_value:
+  _ALL_: "$workspace.id"   # applies to any target environment
+```
+
+## fab deploy config YAML
+
+### Key is item_types_in_scope (plural)
+```yaml
+item_types_in_scope:   # correct (plural)
+  - Notebook
+  - Lakehouse
+
+item_type_in_scope:    # wrong (singular) — silently ignored, deploys everything
+  - Notebook
+```
 
 ## Deploy order for Direct Lake semantic models
 
-Direct Lake validation requires the Delta tables to exist before the semantic model
-deploys. CI's dbt run writes them directly to the same lakehouse (duckrun adapter) before
-`deploy.py --full` runs, so by the time step 5 deploys + refreshes the model the tables
-are present. Order in `deploy.py`: lakehouse → notebook → variable library → copy dbt →
-semantic model → pipeline (+ schedule).
+Direct Lake validation requires Delta tables to exist before the semantic model is deployed.
+Split into two phases using two config files:
+
+**fab_deploy.yml** — Notebook + Lakehouse
+**fab_deploy_sm.yml** — SemanticModel + DataPipeline
+
+Deploy sequence in deploy.py:
+1. `fab deploy` Lakehouse (must exist before Notebook so `$items.Lakehouse.data.$id` resolves)
+2. `fab deploy` Notebook (now the Lakehouse token resolves)
+3. Copy dbt files to OneLake
+3. `fab job run prod.Workspace/run.Notebook -i '{}'` — runs notebook synchronously, creates Delta tables
+4. `fab deploy --config fab_deploy_sm.yml` (SemanticModel + DataPipeline)
+5. Schedule pipeline if not already scheduled
 
 ## Delta writes via the duckrun dbt adapter
 
@@ -58,8 +86,7 @@ Tables are written as **Delta Lake** directly to OneLake by the `duckrun` dbt ad
 virtualization.
 
 - **Adapter wiring** lives in `dbt/profiles.yml`: `type: duckrun`, with
-  `root_path: {{ env_var('ONELAKE_TABLES_PATH') }}` and **no** storage token (the adapter
-  auto-acquires the OneLake token via the same GitHub OIDC path).
+  `root_path: {{ env_var('ONELAKE_TABLES_PATH') }}` and `storage_options.bearer_token`.
   `ONELAKE_TABLES_PATH` = `abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables`.
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).
@@ -83,3 +110,10 @@ virtualization.
 - **No DuckDB version pin** and no `force install iceberg/avro from core_nightly`.
   Only the `azure` extension is needed (for abfss CSV reads); duckrun bundles
   `dbt-duckdb` + `deltalake` and auto-creates the DuckDB Azure secret from the token.
+
+## fab job run for notebooks
+Notebooks require `-i '{}'` (empty input JSON), otherwise the command does nothing:
+```bash
+fab job run prod.Workspace/run.Notebook -i '{}'   # correct
+fab job run prod.Workspace/run.Notebook            # does nothing for notebooks
+```
