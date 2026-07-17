@@ -5,15 +5,18 @@
 the notebook/pipeline are an in-Fabric scheduling demo. Scope is binary: NONE (lakehouse
 only, default) vs FULL (`--full`, every item).
 
-## Tokens (no `fab auth login`)
+## Tokens (no `fab auth login`, no `az login`, no token step)
 
-duckrun acquires three audiences from the env in CI; the workflow mints them with
-`az account get-access-token` and exports them to `GITHUB_ENV`:
-- `ONELAKE_TOKEN` — `storage.azure.com` — dbt writes + `connect().copy()` file upload
-- `FABRIC_TOKEN` — `api.fabric.microsoft.com` — control plane (create/deploy/schedule)
-- `POWERBI_TOKEN` — `analysis.windows.net/powerbi/api` — semantic-model refresh
+duckrun mints every token it needs itself — OneLake (storage), Fabric control plane, and
+Power BI (semantic-model refresh) — directly from the GitHub Actions **OIDC JWT** via
+workload-identity federation (`_github_oidc_token`, first in each acquisition chain). The
+workflow just needs `id-token: write` and `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` in the env;
+there is **no** `azure/login` step and **no** `az account get-access-token` minting. Tokens
+are acquired lazily per audience, so a `deploy=none` run never touches the Power BI scope.
 
-Locally, an `az login` session covers all three (duckrun falls back to azure-identity).
+Locally, an `az login` session covers all three (duckrun falls back to azure-identity's
+`AzureCliCredential`). dbt (`dbt/profiles.yml`) sets **no** `storage_options` token — the
+duckrun adapter auto-acquires the OneLake token the same way.
 
 ## What duckrun does for you
 
@@ -55,7 +58,8 @@ Tables are written as **Delta Lake** directly to OneLake by the `duckrun` dbt ad
 virtualization.
 
 - **Adapter wiring** lives in `dbt/profiles.yml`: `type: duckrun`, with
-  `root_path: {{ env_var('ONELAKE_TABLES_PATH') }}` and `storage_options.bearer_token`.
+  `root_path: {{ env_var('ONELAKE_TABLES_PATH') }}` and **no** storage token (the adapter
+  auto-acquires the OneLake token via the same GitHub OIDC path).
   `ONELAKE_TABLES_PATH` = `abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables`.
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).

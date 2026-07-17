@@ -82,11 +82,10 @@ ws.deploy(str(fabric_items / f"{VL_NAME}.VariableLibrary" / "variables.json"),
           })
 
 # 4. Copy the dbt project to OneLake Files/dbt (the notebook reads the project from there).
-#    duckrun streams every file in-process over obstore and raises on failure.
+#    duckrun streams every file in-process over obstore and raises on failure. The OneLake
+#    storage token is acquired automatically (same GitHub OIDC path as the control plane).
 print("=== 4. Copy dbt files to OneLake ===")
-files = duckrun.connect(
-    f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables",
-    storage_options={"bearer_token": os.environ["ONELAKE_TOKEN"]})
+files = duckrun.connect(f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables")
 files.copy(str(dbt), "dbt", overwrite=True)
 
 # 5. Deploy semantic model — duckrun repoints the OneLake workspace/lakehouse GUIDs baked into

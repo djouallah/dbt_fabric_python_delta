@@ -22,6 +22,11 @@ permissions:
 env:
   AZURE_TRANSPORT_OPTION_TYPE: curl
   CURL_CA_INFO: /etc/ssl/certs/ca-certificates.crt
+  # duckrun mints its own tokens (OneLake / Fabric / Power BI) from the GitHub OIDC
+  # JWT via workload-identity federation — no `az login`, no token step. Needs only
+  # the app registration's client/tenant + `id-token: write` (set above).
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
 jobs:
   pipeline:
@@ -39,27 +44,6 @@ jobs:
 
       - name: 📦 Install dependencies
         run: pip install duckrun pyyaml
-
-      - name: 🔐 Azure federated login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
-
-      - name: 🎟️  Mint tokens (OneLake + Fabric + Power BI)
-        run: |
-          # Three audiences: storage (dbt + duckrun copy), Fabric control plane
-          # (duckrun deploy), Power BI (semantic-model refresh). duckrun reads
-          # FABRIC_TOKEN / POWERBI_TOKEN from the env, so no `fab` login is needed.
-          mint() {
-            TOKEN=$(az account get-access-token --resource "$1" --query accessToken -o tsv)
-            echo "::add-mask::$TOKEN"
-            echo "$2=$TOKEN" >> "$GITHUB_ENV"
-          }
-          mint https://storage.azure.com/               ONELAKE_TOKEN
-          mint https://api.fabric.microsoft.com/         FABRIC_TOKEN
-          mint https://analysis.windows.net/powerbi/api/ POWERBI_TOKEN
 
       - name: 🏗️  Phase 1 — Provision Lakehouse
         run: |
