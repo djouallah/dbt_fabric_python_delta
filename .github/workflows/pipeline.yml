@@ -48,7 +48,10 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install dependencies
-        run: pip install duckrun pyyaml
+        # --pre: track duckrun's latest pre-release (the OneLake storage-token OIDC
+        # auto-acquire lands there ahead of the stable pin). duckrun brings dbt-duckdb,
+        # duckdb, deltalake, azure-identity at its own pins — don't add or pin them.
+        run: pip install --pre duckrun pyyaml
 
       - name: 🏗️  Phase 1 — Provision Lakehouse
         run: |
