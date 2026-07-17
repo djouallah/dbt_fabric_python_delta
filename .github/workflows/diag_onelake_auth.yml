@@ -58,23 +58,31 @@ jobs:
                       'roles', 'scp', 'xms_mirid', 'xms_az_rid')
               return {k: d.get(k) for k in keep if k in d}
 
-          def onelake_read(tok, label):
-              ws, lh = os.environ['WS_ID'], os.environ['LH_ID']
-              # Raw OneLake DFS: list the lakehouse Files directory. 200 => token accepted.
-              url = (f"https://onelake.dfs.fabric.microsoft.com/{ws}"
-                     f"?resource=filesystem&directory={lh}/Files&recursive=false")
-              req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok})
+          def _get(url, tok, extra=None):
+              h = {'Authorization': 'Bearer ' + tok}
+              if extra:
+                  h.update(extra)
+              req = urllib.request.Request(url, headers=h)
               try:
                   r = urllib.request.urlopen(req, timeout=30)
-                  print(f"  {label} raw OneLake read: HTTP {r.status} OK")
+                  return f"HTTP {r.status} OK"
               except urllib.error.HTTPError as e:
                   www = e.headers.get('WWW-Authenticate', '')
-                  body = e.read()[:300].decode('utf-8', 'replace')
-                  print(f"  {label} raw OneLake read: HTTP {e.code} {e.reason}")
-                  print(f"    WWW-Authenticate: {www}")
-                  print(f"    body: {body}")
+                  body = e.read()[:200].decode('utf-8', 'replace').replace('\n', ' ')
+                  return f"HTTP {e.code} {e.reason} | WWW-Authenticate: {www} | {body}"
               except Exception as e:
-                  print(f"  {label} raw OneLake read: {type(e).__name__}: {e}")
+                  return f"{type(e).__name__}: {e}"
+
+          def onelake_read(tok, label):
+              ws, lh = os.environ['WS_ID'], os.environ['LH_ID']
+              # DFS endpoint (what my earlier test hit).
+              dfs = (f"https://onelake.dfs.fabric.microsoft.com/{ws}"
+                     f"?resource=filesystem&directory={lh}/Files&recursive=false")
+              # BLOB endpoint (what DuckDB's azure extension actually uses — where the 401 happened).
+              blob = (f"https://onelake.blob.fabric.microsoft.com/{ws}/{lh}"
+                      f"?restype=container&comp=list&prefix=Files/")
+              print(f"  {label} DFS  read: {_get(dfs, tok)}")
+              print(f"  {label} BLOB read: {_get(blob, tok, {'x-ms-version': '2021-08-06'})}")
 
           print("=== OIDC token (duckrun.auth.get_onelake_token) ===")
           from duckrun import auth
