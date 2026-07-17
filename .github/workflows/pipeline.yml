@@ -26,10 +26,11 @@ env:
   # these two are the whole credential. See duckrun auth._github_oidc_token.
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  # DuckDB's azure extension reads OneLake over a curl transport (the adapter selects it
-  # automatically off-Fabric — its `default` transport fails the OneLake TLS handshake).
-  # Point libcurl at the runner's system CA bundle or the read fails "Problem with the
-  # SSL CA cert". libcurl-only, so it does not touch the Python OIDC token exchange.
+  # DuckDB's azure extension must read OneLake over the curl transport — its `default`
+  # transport fails the OneLake TLS handshake ("Problem with the SSL CA cert") — and curl
+  # needs the runner's system CA bundle. Both are DuckDB/libcurl-only, so neither touches
+  # the Python OIDC token exchange.
+  AZURE_TRANSPORT_OPTION_TYPE: curl
   CURL_CA_INFO: /etc/ssl/certs/ca-certificates.crt
 
 jobs:
