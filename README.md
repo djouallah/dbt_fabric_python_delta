@@ -24,12 +24,7 @@ resolves it by name with `duckrun.workspace(workspace_id).lakehouse_id(lakehouse
 You can run the notebook anywhere — laptop, GitHub, Colab — but running inside Fabric
 gives you in-region latency, no egress, a scheduler, and automatic token handling.
 
-### Limitations
 
-- **Direct Lake reads** the Delta tables natively — duckrun writes real Delta, so there
-  is no Iceberg→Delta virtualization step and no metadata-generation delay.
-- **Table maintenance is on you** — Delta compaction (`OPTIMIZE`) and vacuum. `deltalake`
-  (delta-rs) is a reasonable place to start.
 
 ## dbt duckrun configuration
 
@@ -76,11 +71,11 @@ hasn't loaded yet and inserts them idempotently, keyed on the filename:
 
 ---
 
-## Manual deploy from laptop using Fabric CLI
+## Manual deploy from laptop
 
 ```bash
 az login
-python deploy.py --env main
+python deploy.py
 ```
 
 All you need:
@@ -146,10 +141,10 @@ deploy.py (duckrun workspace API)
 
 ### CI/CD setup (GitHub Actions)
 
-Auth is **OIDC** — no long-lived bearer tokens stored in GitHub. The workflow exchanges
-GitHub's short-lived OIDC token for an Azure AD federated credential via `azure/login@v2`,
-then mints OneLake storage tokens at runtime with `az account get-access-token`. Tokens
-live only for the duration of a job.
+Auth is **OIDC** — no long-lived bearer tokens stored in GitHub, and no `azure/login` or
+token-minting step at all. duckrun exchanges GitHub's short-lived OIDC assertion for every
+token it needs (OneLake storage, the Fabric control plane, Power BI) at the moment it needs
+it. The workflow just grants `id-token: write` and passes the client/tenant id through.
 
 The only GitHub secrets you need:
 - `AZURE_CLIENT_ID` — your Azure AD app registration
