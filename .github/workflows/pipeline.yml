@@ -29,10 +29,14 @@ env:
   # assertion — no azure/login, no token step. Needs `id-token: write` (set above).
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  # Keep in sync with deploy.py's WORKSPACE / LAKEHOUSE (deploy.py is a flat script, so
-  # importing it to read the constants would run a deploy).
+  # Keep in sync with deploy.py's WORKSPACE / LAKEHOUSE / FOLDER (deploy.py is a flat
+  # script, so importing it to read the constants would run a deploy). FOLDER matters here
+  # too: Phase 1 runs on EVERY run and is what actually creates the lakehouse, and duckrun
+  # only places an item in a folder when it CREATES it — so if this call omitted the
+  # folder the lakehouse would land at the workspace root and deploy.py could never move it.
   WS_ID: 91588e42-0f1c-4e56-bcaa-cbf015b8f312
   LH_NAME: data
+  FOLDER: aemo
   # CI's own dbt run only — deliberately smaller than the limits deploy.py injects into
   # the variable library for the in-Fabric notebook run.
   CI_DOWNLOAD_LIMIT: "6"
@@ -63,7 +67,7 @@ jobs:
           ws_id, lh_name = os.environ["WS_ID"], os.environ["LH_NAME"]
           ws = duckrun.workspace(ws_id)
           existed = lh_name in [l["displayName"] for l in ws.list_lakehouses()]
-          lh_id = ws.create_lakehouse(lh_name)          # idempotent, schema-enabled
+          lh_id = ws.create_lakehouse(lh_name, folder=os.environ["FOLDER"])   # idempotent, schema-enabled
           base = f"abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}"
           print(f"ONELAKE_TABLES_PATH={base}/Tables")
           print(f"FILES_PATH={base}/Files")
