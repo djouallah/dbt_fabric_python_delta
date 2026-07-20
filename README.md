@@ -15,11 +15,11 @@ Concretely, for OneLake:
 - `FILES_PATH` = `abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/Files`
 - `TOKEN` = bearer token from `notebookutils.credentials.getToken('storage')` (in Fabric) or `az login --scope https://storage.azure.com/.default` (locally — `AzureCliCredential` picks it up automatically, no secrets to manage)
 
-Use the IDs, not the names. `deploy_config.yml` stores the workspace GUID under `ws`; the
-workspace display name is resolved at deploy time via `fab api -X get workspaces/{ws}`.
-Inside Fabric the notebook resolves the lakehouse GUID via
-`notebookutils.lakehouse.get(lakehouse_name).id`; outside Fabric the `local` section of
-`deploy_config.yml` holds both GUIDs directly.
+Use the IDs, not the names. `deploy.py` holds the workspace GUID in its `WORKSPACE`
+constant and resolves the lakehouse GUID at deploy time via
+`duckrun.workspace(...).create_lakehouse(LAKEHOUSE)`. Inside Fabric the notebook resolves
+the lakehouse GUID via `notebookutils.lakehouse.get(lakehouse_name).id`; outside Fabric it
+resolves it by name with `duckrun.workspace(workspace_id).lakehouse_id(lakehouse_name)`.
 
 You can run the notebook anywhere — laptop, GitHub, Colab — but running inside Fabric
 gives you in-region latency, no egress, a scheduler, and automatic token handling.
@@ -44,8 +44,8 @@ aemo_electricity:
       type: duckrun
       schema: "{{ env_var('DBT_SCHEMA', 'mart') }}"
       root_path: "{{ env_var('ONELAKE_TABLES_PATH') }}"
-      storage_options:
-        bearer_token: "{{ env_var('ONELAKE_TOKEN') }}"
+      # No bearer_token: duckrun acquires the OneLake token itself (Fabric notebook
+      # runtime / GitHub OIDC / az login).
       settings:
         preserve_insertion_order: false
 ```
@@ -85,7 +85,7 @@ python deploy.py --env main
 
 All you need:
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) — `az login` uses your own identity, whatever access you have in Fabric is what the deploy gets
-- [Microsoft Fabric CLI](https://microsoft.github.io/fabric-cli/) (`pip install ms-fabric-cli`)
+- `pip install duckrun` — the deploy runs entirely through its workspace API
 
 No service principal, no app registration, no secrets — that whole song-and-dance is only for the CI path below.
 
@@ -106,14 +106,14 @@ GitHub Actions CI
     └── dbt test  (validates Delta table row counts)
     │
     ▼
-deploy.py (Fabric CLI + Power BI API)
-    ├── fab create  → Lakehouse (with schemas)
-    ├── fab deploy  → Notebook
-    ├── Copy dbt/   → OneLake Files
-    ├── fab job run → Notebook runs dbt, writes Delta tables to OneLake
-    ├── fab deploy  → Semantic Model (Direct Lake, GUIDs swapped)
-    ├── Power BI API → Refresh semantic model
-    └── fab deploy  → Data Pipeline + cron schedule
+deploy.py (duckrun workspace API)
+    ├── create_lakehouse → Lakehouse (schemas, in the `aemo` folder)
+    ├── connect().copy() → dbt/ to OneLake Files
+    └── deploy("fabric_items") → the whole folder, in dependency order:
+        ├── Variable Library (env values injected at deploy time)
+        ├── Notebook
+        ├── Semantic Model (Direct Lake GUIDs repointed, then refreshed)
+        └── Data Pipeline (notebook activities auto-wired) + schedule
 ```
 
 ![Fabric workspace after deploy: semantic model, lakehouse, variable library, notebook, and pipeline](items.png)
@@ -128,7 +128,7 @@ deploy.py (Fabric CLI + Power BI API)
 | Storage | OneLake (Delta / Parquet) |
 | Serving | Direct Lake semantic model (Power BI) |
 | CI | GitHub Actions |
-| Deploy | Fabric CLI (`ms-fabric-cli`) |
+| Deploy | duckrun workspace API (`ws.deploy`) |
 
 ### Environments
 
@@ -140,7 +140,7 @@ deploy.py (Fabric CLI + Power BI API)
 
 ### Configuration files
 
-- `deploy_config.yml` — workspace ID, schedule, and settings per environment
+- `deploy.py` — workspace/lakehouse IDs, workspace folder, schedule and limits, as constants
 - `profiles.yml` — dbt targets with the duckrun adapter config
 - `dbt_project.yml` — model config and variable defaults
 

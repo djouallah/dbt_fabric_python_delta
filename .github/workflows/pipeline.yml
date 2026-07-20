@@ -20,8 +20,23 @@ permissions:
   pages: write
 
 env:
+  # DuckDB's azure extension reads OneLake over a curl transport (its default transport
+  # fails the OneLake TLS handshake) and curl needs the runner's CA bundle.
   AZURE_TRANSPORT_OPTION_TYPE: curl
   CURL_CA_INFO: /etc/ssl/certs/ca-certificates.crt
+  # The only Azure inputs: the OIDC federated identity. duckrun mints every token it needs
+  # (OneLake storage, Fabric control plane, Power BI) by exchanging a fresh GitHub OIDC
+  # assertion — no azure/login, no token step. Needs `id-token: write` (set above).
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  # Keep in sync with deploy.py's WORKSPACE / LAKEHOUSE (deploy.py is a flat script, so
+  # importing it to read the constants would run a deploy).
+  WS_ID: 91588e42-0f1c-4e56-bcaa-cbf015b8f312
+  LH_NAME: data
+  # CI's own dbt run only — deliberately smaller than the limits deploy.py injects into
+  # the variable library for the in-Fabric notebook run.
+  CI_DOWNLOAD_LIMIT: "6"
+  CI_PROCESS_LIMIT: "2"
 
 jobs:
   pipeline:
@@ -38,59 +53,27 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install dependencies
-        run: pip install duckrun pyyaml ms-fabric-cli
-
-      - name: 🔐 Azure federated login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
-
-      - name: 🎟️  Mint OneLake token + Fabric CLI login
-        run: |
-          TOKEN=$(az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv)
-          echo "::add-mask::$TOKEN"
-          echo "ONELAKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-          fab config set encryption_fallback_enabled true
-          FED_TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r '.value')
-          fab auth login -t ${{ secrets.AZURE_TENANT_ID }} -u ${{ secrets.AZURE_CLIENT_ID }} --federated-token "$FED_TOKEN"
+        run: pip install duckrun
 
       - name: 🏗️  Phase 1 — Provision Lakehouse
         run: |
           T0=$(date +%s)
-          WS_ID=$(python -c "import yaml; c=yaml.safe_load(open('deploy_config.yml')); print({**c.get('defaults',{}),**c['main']}['ws'])")
-          LH_NAME=$(python -c "import yaml; c=yaml.safe_load(open('deploy_config.yml')); print({**c.get('defaults',{}),**c['main']}['lakehouse_name'])")
-          WS_NAME=$(fab api -X get "workspaces/$WS_ID" | jq -r '.text.displayName' | tr -d '\r')
-          LAKEHOUSE="$WS_NAME.Workspace/$LH_NAME.Lakehouse"
-          ACTION="already existed"
-          if fab exists "$LAKEHOUSE" | grep -qi true; then
-            echo "✅ Lakehouse exists"
-          else
-            echo "🛠️  Creating..."
-            fab create "$LAKEHOUSE" -P enableSchemas=true
-            sleep 60
-            ACTION="just created"
-          fi
-          LH_ID=$(fab get "$LAKEHOUSE" -q id | tr -d '\r')
           python - <<EOF >> "$GITHUB_ENV"
-          import yaml
-          cfg = yaml.safe_load(open('deploy_config.yml'))
-          e = {**cfg.get('defaults', {}), **cfg['main']}
-          print(f"download_limit={e.get('ci_download_limit', e.get('download_limit', '5'))}")
-          print(f"process_limit={e.get('ci_process_limit', e.get('process_limit', '100'))}")
+          import os, duckrun
+          ws_id, lh_name = os.environ["WS_ID"], os.environ["LH_NAME"]
+          ws = duckrun.workspace(ws_id)
+          existed = lh_name in [l["displayName"] for l in ws.list_lakehouses()]
+          lh_id = ws.create_lakehouse(lh_name)          # idempotent, schema-enabled
+          base = f"abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}"
+          print(f"ONELAKE_TABLES_PATH={base}/Tables")
+          print(f"FILES_PATH={base}/Files")
+          print(f"WS_NAME={ws.display_name}")
+          print(f"LH_ID={lh_id}")
+          print(f"LH_ACTION={'already existed' if existed else 'just created'}")
+          print(f"download_limit={os.environ['CI_DOWNLOAD_LIMIT']}")
+          print(f"process_limit={os.environ['CI_PROCESS_LIMIT']}")
           EOF
-          {
-            echo "ONELAKE_TABLES_PATH=abfss://$WS_ID@onelake.dfs.fabric.microsoft.com/$LH_ID/Tables"
-            echo "FILES_PATH=abfss://$WS_ID@onelake.dfs.fabric.microsoft.com/$LH_ID/Files"
-            echo "WS_ID=$WS_ID"
-            echo "WS_NAME=$WS_NAME"
-            echo "LH_ID=$LH_ID"
-            echo "LH_NAME=$LH_NAME"
-            echo "LH_ACTION=$ACTION"
-            echo "T_LAKEHOUSE=$(($(date +%s) - T0))"
-          } >> "$GITHUB_ENV"
+          echo "T_LAKEHOUSE=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
       - name: 🔨 Phase 2 — dbt run
         run: |
@@ -142,13 +125,10 @@ jobs:
           if [ "$DEPLOY" != "full" ]; then
             echo "::notice::Deploy scope 'none' — skipping Fabric item deploy."
             echo "DEPLOY_SKIPPED=true" >> "$GITHUB_ENV"
-          elif grep -q "^${{ github.ref_name }}:" deploy_config.yml; then
-            echo "Deploy scope: full"
-            python deploy.py --env ${{ github.ref_name }} --full
-            echo "DEPLOY_SKIPPED=false" >> "$GITHUB_ENV"
           else
-            echo "::notice::No '${{ github.ref_name }}' section in deploy_config.yml — skipping deploy."
-            echo "DEPLOY_SKIPPED=true" >> "$GITHUB_ENV"
+            echo "Deploy scope: full"
+            python deploy.py
+            echo "DEPLOY_SKIPPED=false" >> "$GITHUB_ENV"
           fi
           echo "T_DEPLOY=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
@@ -267,7 +247,7 @@ jobs:
           print(f"| 🏢 Workspace | `{ws}` |")
           print(f"| 🏠 Lakehouse | `{lh}` _({lh_action})_ |")
           if env('DEPLOY_SKIPPED') == 'true':
-              print(f"\n_Deploy skipped — no `{branch}:` section in `deploy_config.yml`_")
+              print("\n_Deploy skipped — run with `deploy: full` to deploy the Fabric items_")
           else:
               emojis = {
                   'Lakehouse': '🏠', 'Notebook': '📓', 'SemanticModel': '📊',
