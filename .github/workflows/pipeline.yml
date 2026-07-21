@@ -57,7 +57,9 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install dependencies
-        run: pip install duckrun
+        # TODO: back to plain `duckrun` once the OneLake `<ws>/<item>.Lakehouse` shorthand
+        # (used for ONELAKE_TABLES_PATH below) ships to PyPI.
+        run: pip install "duckrun @ git+https://github.com/djouallah/duckrun@main"
 
       - name: 🏗️  Phase 1 — Provision Lakehouse
         run: |
@@ -69,7 +71,11 @@ jobs:
           existed = lh_name in [l["displayName"] for l in ws.list_lakehouses()]
           lh_id = ws.create_lakehouse(lh_name, folder=os.environ["FOLDER"])   # idempotent, schema-enabled
           base = f"abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}"
-          print(f"ONELAKE_TABLES_PATH={base}/Tables")
+          # Tables path travels as the OneLake shorthand `<workspace>/<item>.Lakehouse`: duckrun
+          # expands it wherever a root enters (profiles.yml root_path, duckrun.connect). FILES_PATH
+          # stays a full URL — sources.yml and stg_csv_archive_log.py paste it straight into
+          # read_csv_auto/read_parquet, which never see the expander.
+          print(f"ONELAKE_TABLES_PATH={ws.display_name}/{lh_name}.Lakehouse")
           print(f"FILES_PATH={base}/Files")
           print(f"WS_NAME={ws.display_name}")
           print(f"LH_ID={lh_id}")

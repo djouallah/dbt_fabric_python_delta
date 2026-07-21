@@ -14,7 +14,10 @@
     {#-- run-operation skips on-run-start, so set the abfss transport here too (curl in CI). --#}
     {%- do run_query("SET GLOBAL azure_transport_option_type = '" ~ env_var('AZURE_TRANSPORT_OPTION_TYPE', 'default') ~ "'") -%}
     {%- set log_path  = env_var('FILES_PATH') ~ '/csv_archive_log.parquet' -%}
-    {%- set scada_tbl = env_var('ONELAKE_TABLES_PATH') ~ '/landing/fct_scada' -%}
+    {#-- target.root_path, not env_var: the profile's root_path may be the OneLake shorthand
+         (`<ws>/<lh>.Lakehouse`) and delta_scan only understands the full abfss URL. The adapter
+         expands it once when credentials load, and surfaces the expanded value on `target`. --#}
+    {%- set scada_tbl = target.root_path ~ '/landing/fct_scada' -%}
     {%- set q -%}
       SELECT count(*)
       FROM read_parquet('{{ log_path }}')

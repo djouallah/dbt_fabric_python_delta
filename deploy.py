@@ -22,11 +22,11 @@ PROCESS_LIMIT  = "100"
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 ws = duckrun.workspace(WORKSPACE)
-lakehouse_id = ws.create_lakehouse(LAKEHOUSE, folder=FOLDER)
+ws.create_lakehouse(LAKEHOUSE, folder=FOLDER)   # idempotent
 
 # dbt project -> Files/dbt (the Fabric notebook runs it from there).
-files = duckrun.connect(
-    f"abfss://{ws.id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/Tables")
+# `<workspace>/<item>.Lakehouse` is the OneLake shorthand — duckrun expands it to the abfss URL.
+files = duckrun.connect(f"{ws.display_name}/{LAKEHOUSE}.Lakehouse")
 files.copy("dbt", "dbt", overwrite=True)
 
 # One call: VariableLibrary -> Notebook -> SemanticModel -> DataPipeline, in order.

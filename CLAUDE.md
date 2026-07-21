@@ -60,7 +60,17 @@ virtualization.
 - **Adapter wiring** lives in `dbt/profiles.yml`: `type: duckrun`, with
   `root_path: {{ env_var('ONELAKE_TABLES_PATH') }}` and **no** `storage_options` token — the
   adapter self-acquires the OneLake token (Fabric runtime / GitHub OIDC / `az login`).
-  `ONELAKE_TABLES_PATH` = `abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables`.
+  `ONELAKE_TABLES_PATH` is the **OneLake shorthand** `{ws_name}/{lh_name}.Lakehouse` — duckrun
+  expands `<workspace>/<item>[/…]` to `abfss://{ws}@onelake.dfs.fabric.microsoft.com/{item}/Tables/…`
+  at every seam a root enters (profile `root_path`, `duckrun.connect`, source `location`). The full
+  abfss URL still works and means the same thing.
+  - Anything that pastes a path into **raw SQL** never goes through the expander, so it must use an
+    already-expanded value: `check_new_daily.sql` uses `target.root_path` (the adapter surfaces the
+    expanded root on the Jinja `target`), and `FILES_PATH` stays a **full abfss URL** because
+    `sources.yml` / `stg_csv_archive_log.py` feed it to `read_csv_auto` / `read_parquet` directly.
+  - The Fabric notebook keeps building full abfss URLs: it `pip install`s duckrun from **PyPI**,
+    which predates the shorthand.
+  - Needs duckrun from git `main` until the shorthand is released (see the CI install step's TODO).
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).
 - **Incremental strategies** are real Delta operations: `merge` (upsert, needs
