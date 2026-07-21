@@ -68,9 +68,7 @@ virtualization.
     already-expanded value: `check_new_daily.sql` uses `target.root_path` (the adapter surfaces the
     expanded root on the Jinja `target`), and `FILES_PATH` stays a **full abfss URL** because
     `sources.yml` / `stg_csv_archive_log.py` feed it to `read_csv_auto` / `read_parquet` directly.
-  - The Fabric notebook keeps building full abfss URLs: it `pip install`s duckrun from **PyPI**,
-    which predates the shorthand.
-  - Needs duckrun from git `main` until the shorthand is released (see the CI install step's TODO).
+  - Shipped in duckrun **0.4.27**; CI installs plain `duckrun` from PyPI.
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).
 - **Incremental strategies** are real Delta operations: `merge` (upsert, needs

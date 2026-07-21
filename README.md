@@ -1,4 +1,4 @@
-# dbt + DuckDB + OneLake Delta (via duckrun)
+# dbt + DuckDB + OneLake Delta
 
 The whole pipeline runs anywhere Python runs — your laptop, a GitHub Actions runner, a
 container, an AI agent. Transformations are written as dbt models; [**duckrun**](https://github.com/djouallah/duckrun)
@@ -39,10 +39,6 @@ aemo_electricity:
       type: duckrun
       schema: "{{ env_var('DBT_SCHEMA', 'mart') }}"
       root_path: "{{ env_var('ONELAKE_TABLES_PATH') }}"
-      # No bearer_token: duckrun acquires the OneLake token itself (Fabric notebook
-      # runtime / GitHub OIDC / az login).
-      settings:
-        preserve_insertion_order: false
 ```
 
 The adapter auto-creates a matching DuckDB Azure secret from the bearer token, enabling

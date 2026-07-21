@@ -57,9 +57,7 @@ jobs:
           python-version: "3.11"
 
       - name: 📦 Install dependencies
-        # TODO: back to plain `duckrun` once the OneLake `<ws>/<item>.Lakehouse` shorthand
-        # (used for ONELAKE_TABLES_PATH below) ships to PyPI.
-        run: pip install "duckrun @ git+https://github.com/djouallah/duckrun@main"
+        run: pip install duckrun
 
       - name: 🏗️  Phase 1 — Provision Lakehouse
         run: |
