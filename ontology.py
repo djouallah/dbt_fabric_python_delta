@@ -62,6 +62,23 @@ ENTITIES = {
             "StationRegCapMW":           ("RegCapMW",                "Double"),
         },
     },
+    # Generation at region x date. fct_summary itself (~140M rows, DUID x 5 minutes) is far
+    # too large and too fine-grained for a graph that fully re-ingests on every save, and its
+    # split date/time columns cannot form an ontology timestamp anyway.
+    "RegionDay": {
+        "table": "agg_region_daily",
+        "key": "RegionDayKey",
+        "properties": {
+            "RegionDayKey":           ("RegionDayKey",  "String"),
+            "RegionDayRegionID":      ("Region",        "String"),
+            "RegionDayDate":          ("date",          "DateTime"),
+            "RegionDayGenerationMWh": ("GenerationMWh", "Double"),
+            "RegionDayPeakMW":        ("PeakMW",        "Double"),
+            "RegionDayAvgMW":         ("AvgMW",         "Double"),
+            "RegionDayAvgPrice":      ("AvgPrice",      "Double"),
+            "RegionDayIntervalCount": ("IntervalCount", "BigInt"),
+        },
+    },
     "Unit": {
         "table": "dim_duid",
         "key": "DUID",
@@ -88,6 +105,7 @@ RELATIONSHIPS = [
     ("LOCATED_IN",    "Station",        "Region",      "dim_station",            "StationName",      "Region"),
     ("CONNECTS_FROM", "Interconnector", "Region",      "dim_interconnector",     "InterconnectorID", "FromRegion"),
     ("CONNECTS_TO",   "Interconnector", "Region",      "dim_interconnector",     "InterconnectorID", "ToRegion"),
+    ("GENERATION_IN", "RegionDay",      "Region",      "agg_region_daily",       "RegionDayKey",     "Region"),
 ]
 
 
@@ -203,3 +221,11 @@ else:
     print(f"Created ontology '{ONTOLOGY}' ({created.json().get('id', '')})")
 
 print(f"{len(ENTITIES)} entity types, {len(RELATIONSHIPS)} relationship types, {len(parts)} parts")
+
+# A schema change re-ingests automatically, but changed DATA in the bound tables does not.
+# Trigger a refresh explicitly so a redeploy after `dbt run` is never serving stale rows.
+graph = next(m for m in call("GET", f"{API}/workspaces/{WORKSPACE}/GraphModels").json()["value"]
+             if ONTOLOGY in m["displayName"])
+session.post(f"{API}/workspaces/{WORKSPACE}/items/{graph['id']}/jobs/instances"
+             "?jobType=RefreshGraph").raise_for_status()
+print(f"Refresh triggered on {graph['displayName']} (takes a couple of minutes)")

@@ -101,6 +101,22 @@ virtualization.
 - **`Unit` is a reserved word in Fabric GQL.** A bare `(u:Unit)` fails as a *syntax*
   error, not "no such label", so it reads like the data binding broke. Backtick it:
   ``(u:`Unit`)``. See `gql.py`.
+- **Bind `DOUBLE`, never `DECIMAL(p, s)`, to a Double ontology property.** The type map
+  sends bare `decimal`/`double`/`float` to Double but a *parameterised* `decimal(p, s)`
+  to **String** — so a `DECIMAL(18,2)` column bound to a Double property ingests as all
+  NULL, silently, with no error anywhere. `agg_region_daily` casts to `DOUBLE` for this
+  reason; `fct_summary` keeps `DECIMAL` because it is not bound to the ontology.
+- **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
+  `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
+  (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).
+  `ontology.py` fires it on every run; it takes a couple of minutes to land.
+- **Interconnector is a graph NODE, so a region-to-region hop is two edges** — and GQL
+  rejects a quantified pattern spanning it ("Parenthesized path pattern expressions must
+  be formed of exactly one edge pattern in between two node patterns"). `shutdown.py`
+  therefore walks one hop at a time and closes in Python. Modelling the link as an edge
+  would allow `{1,n}` but lose per-link filtering, because relationship instances carry
+  no properties. GQL also has **no date functions or literals yet**, which is why
+  `agg_region_daily` exposes a `RegionDayKey` string.
 - **Adding a column to `dim_duid` needs the schema probe, not just the new-DUID probe.**
   The model short-circuits to `SELECT * FROM {{ this }} WHERE FALSE` when no new DUID
   appears, so a newly added column would stay NULL forever on the existing rows. It

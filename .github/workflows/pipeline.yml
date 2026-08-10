@@ -99,11 +99,14 @@ jobs:
           #    exclude them entirely. Selecting them would still scan the full table just to
           #    discover there's nothing new — this skips the node, zero work.
           DAILY_EX=""; [ "$NEW_DAILY" = "0" ] && DAILY_EX="--exclude fct_price --exclude fct_scada"
-          dbt run --exclude stg_csv_archive_log --exclude fct_summary $DAILY_EX $DBT \
+          dbt run --exclude stg_csv_archive_log --exclude fct_summary+ $DAILY_EX $DBT \
             || { echo "::warning::dbt run failed — retrying once..."; sleep 60; dbt retry $DBT; }
-          # 4. Summary: overwrite when a new daily landed, else append intraday.
+          # 4. Summary: overwrite when a new daily landed, else append intraday. `fct_summary+`
+          #    is the model AND its children (agg_region_daily), which must be built here
+          #    rather than in step 3 — downstream of fct_summary, they would otherwise
+          #    aggregate the PREVIOUS run's data and lag by one run.
           FR=""; [ "$NEW_DAILY" = "1" ] && FR="--full-refresh"
-          dbt run --select fct_summary $FR $DBT
+          dbt run --select fct_summary+ $FR $DBT
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
