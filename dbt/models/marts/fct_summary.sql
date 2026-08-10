@@ -45,8 +45,13 @@ SELECT
   date,
   CAST(strftime(SETTLEMENTDATE, '%H%M') AS INT) AS time,
   DUID,
-  CAST(mw AS DECIMAL(18, 4)) AS mw,
-  CAST(price AS DECIMAL(18, 4)) AS price,
+  -- DOUBLE, not DECIMAL(18,4): the ontology's v3 TimeSeries binding maps parameterised
+  -- decimals to String properties, which ingest as NULL against a Double property.
+  CAST(mw AS DOUBLE) AS mw,
+  CAST(price AS DOUBLE) AS price,
+  -- Single observation timestamp for the ontology TimeSeries binding: the split
+  -- date + time(HHMM) pair cannot be selected as a binding timestamp.
+  CAST(SETTLEMENTDATE AS TIMESTAMP) AS ts,
   CAST(MAX(SETTLEMENTDATE) OVER () AS TIMESTAMPTZ) AS cutoff
 FROM incremental_data
 
@@ -94,8 +99,12 @@ SELECT
   date,
   time,
   DUID,
-  CAST(mw AS DECIMAL(18, 4)) AS mw,
-  CAST(price AS DECIMAL(18, 4)) AS price,
+  -- DOUBLE + ts: see the incremental branch comment; both branches must stay in lockstep.
+  CAST(mw AS DOUBLE) AS mw,
+  CAST(price AS DOUBLE) AS price,
+  CAST(date AS TIMESTAMP)
+    + (time // 100) * INTERVAL 1 HOUR
+    + (time % 100) * INTERVAL 1 MINUTE AS ts,
   (SELECT GREATEST(
     (SELECT MAX(CAST(SETTLEMENTDATE AS TIMESTAMPTZ)) FROM {{ ref('fct_scada') }}),
     COALESCE((SELECT MAX(CAST(SETTLEMENTDATE AS TIMESTAMPTZ)) FROM {{ ref('fct_scada_today') }}), CAST('1900-01-01' AS TIMESTAMPTZ))
