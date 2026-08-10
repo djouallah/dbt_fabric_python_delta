@@ -79,6 +79,24 @@ ENTITIES = {
             "RegionDayIntervalCount": ("IntervalCount", "BigInt"),
         },
     },
+    # Generation at unit x date -- the reified PRODUCED event. Daily is the finest grain
+    # the graph can carry (~100k rows vs fct_summary's 140M); 5-minute detail stays SQL-only.
+    "UnitDay": {
+        "table": "agg_unit_daily",
+        "key": "UnitDayKey",
+        "properties": {
+            "UnitDayKey":           ("UnitDayKey",    "String"),
+            "UnitDayDUID":          ("DUID",          "String"),
+            "UnitDayDate":          ("date",          "DateTime"),
+            # ISO date as a String: GQL has no date literals, but ISO strings order
+            # lexicographically, so range filters work on this property.
+            "UnitDayDateKey":       ("DateKey",       "String"),
+            "UnitDayGenerationMWh": ("GenerationMWh", "Double"),
+            "UnitDayPeakMW":        ("PeakMW",        "Double"),
+            "UnitDayAvgMW":         ("AvgMW",         "Double"),
+            "UnitDayIntervalCount": ("IntervalCount", "BigInt"),
+        },
+    },
     "Unit": {
         "table": "dim_duid",
         "key": "DUID",
@@ -106,6 +124,7 @@ RELATIONSHIPS = [
     ("CONNECTS_FROM", "Interconnector", "Region",      "dim_interconnector",     "InterconnectorID", "FromRegion"),
     ("CONNECTS_TO",   "Interconnector", "Region",      "dim_interconnector",     "InterconnectorID", "ToRegion"),
     ("GENERATION_IN", "RegionDay",      "Region",      "agg_region_daily",       "RegionDayKey",     "Region"),
+    ("PRODUCED",      "Unit",           "UnitDay",     "agg_unit_daily",         "DUID",             "UnitDayKey"),
 ]
 
 
