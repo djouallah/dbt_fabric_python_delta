@@ -291,12 +291,6 @@ def model(dbt, session):
 
     duid_sources = [
         (
-            "duid_data",
-            "duid_data",
-            "https://raw.githubusercontent.com/djouallah/aemo_data/refs/heads/main/duid_data.csv",
-            "duid_data.csv",
-        ),
-        (
             "duid_facilities",
             "facilities",
             "https://data.wa.aemo.com.au/datafiles/post-facilities/facilities.csv",
@@ -334,6 +328,27 @@ def model(dbt, session):
         if not duid_dir.startswith(("az://", "abfss://")):
             os.makedirs(duid_dir, exist_ok=True)
 
+        # NEM DUIDs come from the latest registration-list snapshot archived in
+        # djouallah/aemo_data (xlsx content despite the .xls name, so read_xlsx works).
+        reg_name, reg_url = session.sql("""
+            SELECT
+              json_extract_string(f, '$.name') AS name,
+              json_extract_string(f, '$.download_url') AS url
+            FROM (
+              SELECT unnest(from_json(content, '["json"]')) AS f
+              FROM read_text('https://api.github.com/repos/djouallah/aemo_data/contents/data/duid/registration')
+            )
+            WHERE json_extract_string(f, '$.name') LIKE 'NEM-Registration-and-Exemption-List_%.xls'
+            ORDER BY name DESC
+            LIMIT 1
+        """).fetchone()
+        session.sql(f"""
+            COPY (
+                SELECT * FROM read_xlsx('{reg_url}',
+                    sheet='PU and Scheduled Loads', header=true, all_varchar=true)
+            ) TO '{csv_archive_path}/duid/duid_data.csv' (FORMAT CSV, HEADER)
+        """)
+
         for source_type, source_filename, url, csv_filename in duid_sources:
             session.sql(f"""
                 COPY (
@@ -346,6 +361,13 @@ def model(dbt, session):
         # Delete old DUID log entries and re-insert
         session.sql("DELETE FROM _csv_archive_log WHERE source_type LIKE 'duid_%'")
         now = datetime.now(timezone.utc).isoformat()
+        session.sql(f"""
+            INSERT INTO _csv_archive_log VALUES (
+                'duid_data', '{reg_name}',
+                '/duid/duid_data.csv', '{now}'::TIMESTAMPTZ,
+                NULL, '{reg_url}', NULL, 'duid_data'
+            )
+        """)
         for source_type, source_filename, url, csv_filename in duid_sources:
             csv_base = csv_filename.rsplit(".", 1)[0]
             session.sql(f"""
