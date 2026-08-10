@@ -125,6 +125,14 @@ virtualization.
   which splits a question into GQL for structure + KQL for observations). So GQL alone
   can never aggregate a measure that lives in a time series — a graph-side MWh answer
   requires either an aggregate entity (the UnitDay pattern) or cross-engine routing.
+- **A leaf-grain fact table CAN live in the graph (verified in `ontology_v4.py`):**
+  11.28M Observation nodes (one per fct_summary row, three-part composite key
+  `[DUID, DateKey, Interval]`) + 10.75M PRODUCED edges ingested in ~5 minutes, counts
+  exact. `sum(o.MW)` over the AGL ownership traversal at 5-minute grain matches the SQL
+  ground truth to the decimal. Costs: keyed lookups ~2-3s, the full rollup traversal
+  ~37s (vs seconds in DuckDB); fact rows whose DUID is missing from dim_duid become
+  edge-less orphan nodes (~530k); and the FIRST heavy query after a load can return
+  status 00000 with EMPTY data — treat an empty aggregate result as suspect and retry.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).
