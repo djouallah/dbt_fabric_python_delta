@@ -62,27 +62,6 @@ models:
         tests:
           - not_null
 
-  - name: agg_unit_daily
-    description: >
-      Generation rolled up to unit x date — backs the UnitDay entity and the PRODUCED
-      edge in the ontology graph. Net of charging, so a battery's day can be negative.
-    columns:
-      - name: UnitDayKey
-        description: DUID|date — string key, because ontology entity keys cannot be dates
-        tests:
-          - unique
-          - not_null
-      - name: DUID
-        tests:
-          - not_null
-          - relationships:
-              to: ref('dim_duid')
-              field: DUID
-      - name: IntervalCount
-        description: 288 on a complete day; lower means a partial day or a gap in the archive
-        tests:
-          - not_null
-
   - name: fct_summary
     description: Combined SCADA and price summary
     columns:
