@@ -52,6 +52,9 @@ SELECT
   -- Single observation timestamp for the ontology TimeSeries binding: the split
   -- date + time(HHMM) pair cannot be selected as a binding timestamp.
   CAST(SETTLEMENTDATE AS TIMESTAMP) AS ts,
+  -- ISO date as a string: ontology entity KEY parts may only be String/Integer, so the
+  -- v4 Observation entity keys on [DUID, DateKey, time] -- DATE itself is banned there.
+  CAST(date AS VARCHAR) AS DateKey,
   CAST(MAX(SETTLEMENTDATE) OVER () AS TIMESTAMPTZ) AS cutoff
 FROM incremental_data
 
@@ -105,6 +108,7 @@ SELECT
   CAST(date AS TIMESTAMP)
     + (time // 100) * INTERVAL 1 HOUR
     + (time % 100) * INTERVAL 1 MINUTE AS ts,
+  CAST(date AS VARCHAR) AS DateKey,
   (SELECT GREATEST(
     (SELECT MAX(CAST(SETTLEMENTDATE AS TIMESTAMPTZ)) FROM {{ ref('fct_scada') }}),
     COALESCE((SELECT MAX(CAST(SETTLEMENTDATE AS TIMESTAMPTZ)) FROM {{ ref('fct_scada_today') }}), CAST('1900-01-01' AS TIMESTAMPTZ))

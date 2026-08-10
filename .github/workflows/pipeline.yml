@@ -9,6 +9,10 @@ on:
         type: choice
         options: [none, full]
         default: none
+      full_refresh:
+        description: "Force fct_summary+ --full-refresh (needed after a schema change when no new daily file would trigger the rebuild path)"
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -105,7 +109,7 @@ jobs:
           #    is the model AND its children (agg_region_daily), which must be built here
           #    rather than in step 3 — downstream of fct_summary, they would otherwise
           #    aggregate the PREVIOUS run's data and lag by one run.
-          FR=""; [ "$NEW_DAILY" = "1" ] && FR="--full-refresh"
+          FR=""; { [ "$NEW_DAILY" = "1" ] || [ "${{ inputs.full_refresh }}" = "true" ]; } && FR="--full-refresh"
           dbt run --select fct_summary+ $FR $DBT
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
