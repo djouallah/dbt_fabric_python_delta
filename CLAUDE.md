@@ -98,6 +98,9 @@ virtualization.
   never executes seeds at all. `dim_region`, `dim_interconnector` and
   `dim_participant_parent` follow this pattern. Adding a `seeds/` directory would mean
   adding a `dbt seed` step to *both* runners and keeping them in parity — don't.
+- **`Unit` is a reserved word in Fabric GQL.** A bare `(u:Unit)` fails as a *syntax*
+  error, not "no such label", so it reads like the data binding broke. Backtick it:
+  ``(u:`Unit`)``. See `gql.py`.
 - **Adding a column to `dim_duid` needs the schema probe, not just the new-DUID probe.**
   The model short-circuits to `SELECT * FROM {{ this }} WHERE FALSE` when no new DUID
   appears, so a newly added column would stay NULL forever on the existing rows. It
