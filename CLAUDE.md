@@ -117,6 +117,15 @@ virtualization.
   would allow `{1,n}` but lose per-link filtering, because relationship instances carry
   no properties. GQL also has **no date functions or literals yet**, which is why
   `agg_region_daily` exposes a `RegionDayKey` string.
+- **GQL date ranges work via an ISO-date String property.** ISO-8601 strings order
+  lexicographically, so `agg_unit_daily` carries `DateKey` (`CAST(date AS VARCHAR)`)
+  and `WHERE ud.UnitDayDateKey >= '2026-08-03' AND ud.UnitDayDateKey <= '2026-08-09'`
+  filters a week fine — no per-day key-equality OR chains needed.
+- **GQL aggregation: no `round()`, and grouping must be an explicit `GROUP BY`.**
+  Only `sum`/`count`/`max`-style aggregates parse; round client-side. Mixing a plain
+  property with an aggregate in `RETURN` fails ("neither part of the GROUP BY nor an
+  aggregation") — Cypher-style implicit grouping does not exist; write
+  `RETURN ud.UnitDayDateKey AS day, sum(...) AS mwh GROUP BY day ORDER BY day`.
 - **Adding a column to `dim_duid` needs the schema probe, not just the new-DUID probe.**
   The model short-circuits to `SELECT * FROM {{ this }} WHERE FALSE` when no new DUID
   appears, so a newly added column would stay NULL forever on the existing rows. It
