@@ -50,8 +50,9 @@ links = gql("MATCH (i:Interconnector) WHERE i.InterconnectorInService "
             "RETURN i.InterconnectorID AS id, i.InterconnectorName AS name")
 regions = {r["r"] for r in
            gql("MATCH (r:Region) WHERE r.RegionMarket = 'NEM' RETURN r.RegionID AS r")}
-day = gql("MATCH (rd:RegionDay) WHERE rd.RegionDayIntervalCount = 288 "
-          "RETURN max(rd.RegionDayDate) AS d")[0]["d"][:10]
+# DateKey is already an ISO string, so no [:10] truncation dance.
+day = gql("MATCH (ud:UnitDay) WHERE ud.UnitDayIntervalCount = 288 "
+          "RETURN max(ud.UnitDayDateKey) AS d")[0]["d"]
 
 print(f"{len(links)} in-service links, {len(regions)} NEM regions")
 print(f"generation priced on {day} (latest complete day)\n")
@@ -70,9 +71,11 @@ for link in sorted(links, key=lambda l: l["name"]):
     mw = gql("MATCH (u:`Unit`) WHERE "                     # `Unit` is a GQL reserved word
              + " OR ".join(f"u.UnitRegion = '{r}'" for r in stranded)
              + " RETURN sum(u.UnitRegCapMW) AS mw")[0]["mw"]
-    # GQL has no date functions or literals yet, so the day is picked via the string key.
-    mwh = gql("MATCH (rd:RegionDay)-[:GENERATION_IN]->(r:Region) WHERE "
-              + " OR ".join(f"rd.RegionDayKey = '{r}|{day}'" for r in stranded)
-              + " RETURN sum(rd.RegionDayGenerationMWh) AS mwh")[0]["mwh"]
+    # Region x day is DERIVED: aggregate UnitDay through Unit.UnitRegion. There is no
+    # RegionDay entity -- it would only duplicate what this traversal computes.
+    mwh = gql(f"MATCH (ud:UnitDay)<-[:PRODUCED]-(u:`Unit`) "
+              f"WHERE ud.UnitDayDateKey = '{day}' AND ("
+              + " OR ".join(f"u.UnitRegion = '{r}'" for r in stranded)
+              + ") RETURN sum(ud.UnitDayGenerationMWh) AS mwh")[0]["mwh"]
     print(f"{link['name']:<26} {', '.join(sorted(stranded)):<24} "
           f"{float(mw):>8,.0f} {float(mwh):>10,.0f}")

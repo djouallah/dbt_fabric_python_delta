@@ -62,27 +62,6 @@ models:
         tests:
           - not_null
 
-  - name: agg_region_daily
-    description: >
-      Generation rolled up to region x date. The grain the ontology graph binds to;
-      fct_summary itself is far too large and too fine to sit in a graph.
-    columns:
-      - name: RegionDayKey
-        description: Region|date — string key, because ontology entity keys cannot be dates
-        tests:
-          - unique
-          - not_null
-      - name: Region
-        tests:
-          - not_null
-          - relationships:
-              to: ref('dim_region')
-              field: RegionID
-      - name: IntervalCount
-        description: 288 on a complete day; lower means a partial day or a gap in the archive
-        tests:
-          - not_null
-
   - name: agg_unit_daily
     description: >
       Generation rolled up to unit x date — backs the UnitDay entity and the PRODUCED

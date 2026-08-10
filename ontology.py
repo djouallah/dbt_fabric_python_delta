@@ -62,24 +62,9 @@ ENTITIES = {
             "StationRegCapMW":           ("RegCapMW",                "Double"),
         },
     },
-    # Generation at region x date. fct_summary itself (~140M rows, DUID x 5 minutes) is far
-    # too large and too fine-grained for a graph that fully re-ingests on every save, and its
-    # split date/time columns cannot form an ontology timestamp anyway.
-    "RegionDay": {
-        "table": "agg_region_daily",
-        "key": "RegionDayKey",
-        "properties": {
-            "RegionDayKey":           ("RegionDayKey",  "String"),
-            "RegionDayRegionID":      ("Region",        "String"),
-            "RegionDayDate":          ("date",          "DateTime"),
-            "RegionDayGenerationMWh": ("GenerationMWh", "Double"),
-            "RegionDayPeakMW":        ("PeakMW",        "Double"),
-            "RegionDayAvgMW":         ("AvgMW",         "Double"),
-            "RegionDayAvgPrice":      ("AvgPrice",      "Double"),
-            "RegionDayIntervalCount": ("IntervalCount", "BigInt"),
-        },
-    },
-    # Generation at unit x date -- the reified PRODUCED event. Daily is the finest grain
+    # Generation at unit x date -- the reified PRODUCED event, and the ONLY generation
+    # entity: region x day is derived at query time by aggregating UnitDay through
+    # Unit.UnitRegion (a RegionDay entity would duplicate it). Daily is the finest grain
     # the graph can carry (~100k rows vs fct_summary's 140M); 5-minute detail stays SQL-only.
     "UnitDay": {
         "table": "agg_unit_daily",
@@ -123,7 +108,6 @@ RELATIONSHIPS = [
     ("LOCATED_IN",    "Station",        "Region",      "dim_station",            "StationName",      "Region"),
     ("CONNECTS_FROM", "Interconnector", "Region",      "dim_interconnector",     "InterconnectorID", "FromRegion"),
     ("CONNECTS_TO",   "Interconnector", "Region",      "dim_interconnector",     "InterconnectorID", "ToRegion"),
-    ("GENERATION_IN", "RegionDay",      "Region",      "agg_region_daily",       "RegionDayKey",     "Region"),
     ("PRODUCED",      "Unit",           "UnitDay",     "agg_unit_daily",         "DUID",             "UnitDayKey"),
 ]
 

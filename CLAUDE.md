@@ -104,7 +104,7 @@ virtualization.
 - **Bind `DOUBLE`, never `DECIMAL(p, s)`, to a Double ontology property.** The type map
   sends bare `decimal`/`double`/`float` to Double but a *parameterised* `decimal(p, s)`
   to **String** — so a `DECIMAL(18,2)` column bound to a Double property ingests as all
-  NULL, silently, with no error anywhere. `agg_region_daily` casts to `DOUBLE` for this
+  NULL, silently, with no error anywhere. `agg_unit_daily` casts to `DOUBLE` for this
   reason; `fct_summary` keeps `DECIMAL` because it is not bound to the ontology.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
@@ -116,7 +116,7 @@ virtualization.
   therefore walks one hop at a time and closes in Python. Modelling the link as an edge
   would allow `{1,n}` but lose per-link filtering, because relationship instances carry
   no properties. GQL also has **no date functions or literals yet**, which is why
-  `agg_region_daily` exposes a `RegionDayKey` string.
+  `agg_unit_daily` exposes a `UnitDayKey` string.
 - **GQL date ranges work via an ISO-date String property.** ISO-8601 strings order
   lexicographically, so `agg_unit_daily` carries `DateKey` (`CAST(date AS VARCHAR)`)
   and `WHERE ud.UnitDayDateKey >= '2026-08-03' AND ud.UnitDayDateKey <= '2026-08-09'`
