@@ -116,6 +116,15 @@ virtualization.
   unnecessary. Still true: key parts are String/Integer only — a date in the key must be
   an ISO string (`DateKey`), and a brand-new graph answers `GraphNotQueryable` (HTTP 400)
   until its first load completes.
+- **TimeSeries-bound properties are INVISIBLE to GQL — by design (verified in
+  `ontology_v3.py`).** Binding `fct_summary` to Unit as a TimeSeries data binding
+  deploys fine, but `u.MW` fails with "Property 'MW' does not exist in type" and
+  `Timestamp` is a GQL reserved word. The graph model only materializes non-timeseries
+  properties and edges; time series are meant to be queried through a separate surface
+  (KQL/Eventhouse, entity Overview widgets, or the Data Agent's NL2Ontology routing,
+  which splits a question into GQL for structure + KQL for observations). So GQL alone
+  can never aggregate a measure that lives in a time series — a graph-side MWh answer
+  requires either an aggregate entity (the UnitDay pattern) or cross-engine routing.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).
