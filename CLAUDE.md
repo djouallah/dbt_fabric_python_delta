@@ -106,6 +106,16 @@ virtualization.
   to **String** — so a `DECIMAL(18,2)` column bound to a Double property ingests as all
   NULL, silently, with no error anywhere. `agg_unit_daily` casts to `DOUBLE` for this
   reason; `fct_summary` keeps `DECIMAL` because it is not bound to the ontology.
+- **Composite entity keys and duplicate property names DO work — verified in
+  `ontology_v2.py`.** `entityIdParts` takes multiple property ids and a contextualization
+  binds multiple key-ref columns: 49,245 UnitDay nodes keyed `[DUID, DateKey]` ingested
+  with a two-column `PRODUCED` edge that traverses correctly (58,231.4 MWh test query
+  matches v1/SQL exactly). Property names may also repeat across entity types when the
+  value type matches (`Unit.Region` and `Station.Region` are both plain `Region`). So
+  v1's concatenated `UnitDayKey` surrogate and global name prefixing were both
+  unnecessary. Still true: key parts are String/Integer only — a date in the key must be
+  an ISO string (`DateKey`), and a brand-new graph answers `GraphNotQueryable` (HTTP 400)
+  until its first load completes.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).
