@@ -91,6 +91,18 @@ virtualization.
 - **No DuckDB version pin** and no `force install iceberg/avro from core_nightly`.
   Only the `azure` extension is needed (for abfss CSV reads); duckrun bundles
   `dbt-duckdb` + `deltalake` and auto-creates the DuckDB Azure secret from the token.
+- **Hand-maintained reference data is a `table` model with an inline `VALUES` list, never
+  a dbt seed.** Two reasons, both fatal to seeds here: duckrun materializes `seed` into
+  in-memory DuckDB rather than Delta, so a seed is invisible to Power BI Direct Lake and
+  to the Fabric Ontology/Graph items; and CI + the notebook both drive `dbt run`, which
+  never executes seeds at all. `dim_region`, `dim_interconnector` and
+  `dim_participant_parent` follow this pattern. Adding a `seeds/` directory would mean
+  adding a `dbt seed` step to *both* runners and keeping them in parity — don't.
+- **Adding a column to `dim_duid` needs the schema probe, not just the new-DUID probe.**
+  The model short-circuits to `SELECT * FROM {{ this }} WHERE FALSE` when no new DUID
+  appears, so a newly added column would stay NULL forever on the existing rows. It
+  therefore also runs a `DESCRIBE` against `{{ this }}` and forces a full rebuild once
+  when the column is absent. Extend that probe's column name when adding the next one.
 
 ## Running a deployed item on Fabric
 

@@ -9,6 +9,12 @@ models:
         tests:
           - unique
           - not_null
+      - name: StationName
+        description: Physical station the unit sits behind (NEM only; NULL for WEM facilities)
+      - name: DispatchType
+        description: Generating Unit, Load, or Bidirectional Unit (the modern battery registration)
+      - name: RegCapMW
+        description: Registered generation capacity in MW
 
   - name: dim_calendar
     description: Calendar dimension with date attributes
@@ -18,3 +24,84 @@ models:
         tests:
           - unique
           - not_null
+
+  - name: dim_region
+    description: The five NEM regions plus the WEM (WA1), which has no NEM interconnection
+    columns:
+      - name: RegionID
+        tests:
+          - unique
+          - not_null
+      - name: Market
+        tests:
+          - accepted_values:
+              values: ['NEM', 'WEM']
+
+  - name: dim_interconnector
+    description: >
+      Physical interconnectors between NEM regions. Only rows with InService = true are
+      real edges today; EnergyConnect is carried as a known-future link and must be
+      filtered out of any reachability traversal.
+    columns:
+      - name: InterconnectorID
+        tests:
+          - unique
+          - not_null
+      - name: FromRegion
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_region')
+              field: RegionID
+      - name: ToRegion
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_region')
+              field: RegionID
+      - name: AcDc
+        tests:
+          - accepted_values:
+              values: ['AC', 'DC']
+
+  - name: dim_participant_parent
+    description: >
+      Curated participant -> immediate parent edges (the recursive SUBSIDIARY_OF
+      relationship). One hop per row, deliberately not transitively closed.
+    columns:
+      - name: Participant
+        tests:
+          - unique
+          - not_null
+      - name: ParentParticipant
+        tests:
+          - not_null
+
+  - name: dim_participant
+    description: >
+      Closed node set for the ownership network: every registered participant plus every
+      corporate entity named as a parent, each with its immediate parent edge.
+    columns:
+      - name: Participant
+        tests:
+          - unique
+          - not_null
+      - name: ParentParticipant
+        description: Immediate parent; NULL at a root or where ownership is not established
+        tests:
+          - relationships:
+              to: ref('dim_participant')
+              field: Participant
+
+  - name: dim_station
+    description: Station entity rolled up from dim_duid, with per-dispatch-type unit counts
+    columns:
+      - name: StationName
+        tests:
+          - unique
+          - not_null
+      - name: Region
+        tests:
+          - relationships:
+              to: ref('dim_region')
+              field: RegionID
