@@ -257,6 +257,47 @@ virtualization.
   an ontology value, so `data_agent.py` bets on `"ontology"` and echoes back what Fabric
   actually stored; `python data_agent.py --dump [name]` decodes any agent's stored
   definition when that bet needs checking against a portal-built agent.
+- **v5: the fix for bad measure answers was a smaller entity, not a better prompt.**
+  `ontology_v5.py` adds two tiny entity sets on the new marts — **RegionInterval** (373k
+  nodes from `fct_region`: demand, net interchange, available generation, and the ONE
+  authoritative regional price) and **Flow** (298k from `fct_interconnector_derived`) —
+  alongside v4's 11.9M `Observation`. Together they add ~5% to the load and remove the
+  entire class of question v4 got wrong. The proof: *"average spot price in SA1 on
+  2026-08-09"* returned **$111.12 from a 1,329,227-row fan-out** under v4 and **$35.66 over
+  288 intervals** under v5, first try.
+- **v4's "ground truth" price was the right answer to the wrong question.** Averaging
+  `Price` over `Observation` gives **35.145** — a *unit-weighted* mean over 15,032 unit-rows,
+  because the regional price is copied onto every unit. The true time-average over 288
+  intervals is **35.665**. There was no way to compute the correct number from `fct_summary`
+  alone, which is why v4's instructions had to tell the agent to caveat it. `fct_region`
+  makes it a plain `avg()`.
+- **Rename around GQL reserved words instead of documenting them.** v5 renames `Unit` →
+  `GeneratingUnit` and `Interval` → `TimeHHMM`. Nothing in v5 needs a backtick, so the whole
+  "a bare `(u:Unit)` is a *syntax* error" trap disappears rather than being something the
+  agent must remember. `TimeHHMM` also stops the name from lying — the column is HHMM.
+- **Tell the agent which entity to use before telling it how to query.** The single biggest
+  accuracy lever in `data_agent.py`'s instructions is now a routing rule near the top:
+  region-wide questions → `RegionInterval`, unit/station/company → `Observation`,
+  between-regions → `Flow`, structure-only → the dimensions. Wrong entity, not wrong syntax,
+  was what produced the confidently wrong numbers.
+- **RELATIVE dates are unreliable; EXPLICIT dates are exact. This one is not fixable by
+  prompting.** Ask *"average demand in QLD1 between 2026-08-05 and 2026-08-11"* and you get
+  5915.88 MW over **1,777 intervals** — exact. Ask *"last week"* and you often get 6012.53 MW
+  over **78,146 intervals**, which is the entire 8-year history for that region
+  (390,730 RegionInterval rows ÷ 5 regions = 78,146 exactly). The agent anchors the window
+  correctly, states the right date range in prose, and then emits an aggregate with the
+  `DateKey` predicate missing. Raw GQL with the same filter is correct, so it is the
+  NL2Ontology planner losing the predicate across its two-step plan, not the engine.
+  Mitigations tried, in order: a forceful "anchoring is only half the job" rule; an interval
+  -count sanity table; and finally **injecting the latest date into `aiInstructions` at
+  deploy time** (`data_agent.py` queries `max(date) FROM mart.fct_region` and substitutes
+  `__LATEST_DATE__`/`__WEEK_START__`) so no probe step is needed at all. That last one helped
+  — SA1 spare capacity then came back exact at 2,042 MW over 1,777 intervals — but QLD1
+  demand still fails intermittently on the same question shape. **Treat it as non-determinism
+  and use explicit dates for anything that matters.**
+  What DOES work reliably is making the failure visible: because the instructions force a row
+  count alongside every measure, a wrong answer announces itself as "78,146 intervals" instead
+  of arriving as a plausible number. Keep that rule.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).

@@ -57,14 +57,28 @@ QUESTIONS = [
     ("What are the top 10 stations by registered capacity?",
      "Eraring 2921.5 MW, Bayswater 2640 MW, Loy Yang A 2210 MW, ..."),
 
+    # v5 added RegionInterval, so the regional price is now ONE authoritative value per
+    # interval instead of the same number copied onto every unit. Note the expectation
+    # CHANGED: $35.665 is the true time-average over 288 intervals. The $35.145 this file
+    # used to expect was the unit-weighted average over 15,032 unit-rows -- the right answer
+    # to a question nobody asked, which is all v4 could compute.
     ("What was the average spot price in SA1 on 2026-08-09?",
-     "$35.145/MWh from 15,032 readings across 66 units"),
+     "$35.665/MWh over 288 intervals, from RegionInterval (NOT the unit-weighted $35.145)"),
 
     ("What was the total generation in MWh in SA1 on 2026-08-09?",
      "46,351.5 MWh from 15,032 readings across 66 units"),
 
-    ("What was the average spot price in SA1 last week?",
-     "the week ending 2026-08-11; SA1 daily averages range about $6 to $174"),
+    ("What was the average demand in Queensland last week, and its peak?",
+     "avg 5,916 MW, peak 8,072 MW for the week ending 2026-08-11"),
+
+    ("Is Queensland a net importer or exporter of electricity, and by how much?",
+     "net EXPORTER, about +797 MW on average"),
+
+    ("How much power flowed between each pair of regions last week?",
+     "QLD1-NSW1 -797, VIC1-NSW1 +444, TAS1-VIC1 -125, SA1-VIC1 -33 MW average"),
+
+    ("How much spare generating capacity did South Australia have last week?",
+     "AvailableGeneration - TotalDemand, about 2,042 MW average"),
 ]
 
 session = requests.Session()
@@ -136,7 +150,8 @@ def ask(question):
 # gets two attempts, and the retry is printed rather than hidden -- a question that needs
 # retrying is a real quality signal, not noise to be smoothed away.
 DUD = ("technical issue", "technical query error", "technical problem", "unable to",
-       "no data was found", "was not able", "failed due to")
+       "no data was found", "was not able", "failed due to", "not found in the available",
+       "could not find", "no entry specifically")
 
 asked = [(q, None) for q in sys.argv[1:]] or QUESTIONS
 
