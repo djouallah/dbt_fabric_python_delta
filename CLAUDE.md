@@ -112,11 +112,20 @@ virtualization.
   is the only way to get **historical** flows — the `PUBLIC_DAILY` archive contains no
   interconnector record at all (only `DUNIT`, `DREGION`, `DISPATCH.CASESOLUTION`,
   `DISPATCH.REGIONFCASREQUIREMENT`). Validation: the residual `sum(NETINTERCHANGE)` averages
-  **+122.9 MW and is always positive** — that is transmission loss, and a sign error would
-  swing it negative. Cross-check: TAS1's extreme import is **−478.0 MW**, Basslink's nameplate
-  rating exactly. **This dies the day EnergyConnect (PEC, SA1↔NSW1) commissions** and closes a
-  cycle; `assert_network_residual_is_loss.sql` is the tripwire, and the fix is to retire the
-  model in favour of `fct_interconnector`, not to patch it.
+  **+85.8 MW over the full 74,592 intervals** (median +80.4, max +369.7) — that is
+  transmission loss. Cross-check: derived flows land exactly on the physical ratings —
+  Basslink peaks at **478.0 MW** and SA1↔VIC1 at **±815.0**, to the megawatt.
+  **There is a noise floor: the residual dips slightly negative on 531 intervals (0.71%),
+  worst −19.4 MW, and never below −25.** Those dips cluster where interchange is smallest
+  (the 500–1500 MW band), i.e. AEMO's per-region loss allocation rounding, not a broken
+  invariant. So `assert_network_residual_is_loss.sql` bounds each interval at **−50 MW**
+  (≈2.5× the worst observed noise) and separately asserts the **mean is positive**. A first
+  version asserting `>= −1` per interval failed on 421 rows of ordinary noise. The two checks
+  target the two real failures: a sign flip drags the mean to −86 (verified: 55,007 rows
+  returned), and **EnergyConnect (PEC, SA1↔NSW1) commissioning** closes a cycle and breaks
+  the balance by hundreds of MW (verified: a simulated 300 MW uncounted link returns 74,295
+  rows). If it fires for the second reason, **retire `fct_interconnector_derived` in favour of
+  `fct_interconnector`** — do not patch it.
 - **The intraday DISPATCHIS files carry six record types beyond the one being read.**
   `fct_price_today`'s `WHERE I='D' AND PRICE='PRICE'` filter was discarding
   `INTERCONNECTORRES` (per-link `MWFLOW`, `EXPORTLIMIT`, `IMPORTLIMIT` — real transfer
