@@ -156,9 +156,12 @@ virtualization.
 - **`Unit` and `Interval` are reserved words in Fabric GQL.** A bare `(u:Unit)` or a bare
   `o.Interval` fails as a *syntax* error, not "no such label/property", so it reads like
   the data binding broke. Backtick both — ``(u:`Unit`)``, ``o.`Interval` `` — which works
-  in `RETURN`, `WHERE` and `GROUP BY` alike. Note `ontology_v4.py` renamed `time` →
-  `Interval` specifically to dodge `TIME` being reserved, and landed on another reserved
-  word; the binding is fine, only unbackticked references fail. See `gql.py`.
+  in `RETURN`, `WHERE` and `GROUP BY` alike. **v5 sidesteps this entirely** by naming the
+  entities `GeneratingUnit` and `TimeHHMM`, so nothing in `ontology.py`, `gql.py` or
+  `shutdown.py` needs a backtick today — but the trap is still live for any new entity or
+  property you name, and the failure mode reads like a broken binding rather than a syntax
+  error. (History: an earlier version renamed the `time` column to `Interval` specifically
+  to dodge `TIME` being reserved, and landed on another reserved word.)
 - **`fct_summary.time` (and so `Observation.Interval`) is HHMM, not minutes past midnight.**
   `CAST(strftime(SETTLEMENTDATE, '%H%M') AS INT)` → `0, 5, … 55, 100, 105, … 2355`; min 0,
   max 2355, 288 distinct. Decode as `hour = time / 100`, `minute = time % 100`. The values
@@ -173,8 +176,9 @@ virtualization.
   reason — `fct_summary` included (it emits `DOUBLE`, not `DECIMAL`, despite an earlier note
   here saying otherwise), and so do `fct_region`, `fct_unit_dispatch`, `fct_interconnector`,
   `fct_interconnector_derived` and `fct_constraint`.
-- **Composite entity keys and duplicate property names DO work — verified in
-  `ontology_v2.py`.** `entityIdParts` takes multiple property ids and a contextualization
+- **Composite entity keys and duplicate property names DO work** (verified in the v2
+  experiment; `ontology.py` relies on it for all three fact entities).
+  `entityIdParts` takes multiple property ids and a contextualization
   binds multiple key-ref columns: 49,245 UnitDay nodes keyed `[DUID, DateKey]` ingested
   with a two-column `PRODUCED` edge that traverses correctly (58,231.4 MWh test query
   matches v1/SQL exactly). Property names may also repeat across entity types when the
@@ -183,8 +187,9 @@ virtualization.
   unnecessary. Still true: key parts are String/Integer only — a date in the key must be
   an ISO string (`DateKey`), and a brand-new graph answers `GraphNotQueryable` (HTTP 400)
   until its first load completes.
-- **TimeSeries-bound properties are INVISIBLE to GQL — by design (verified in
-  `ontology_v3.py`).** Binding `fct_summary` to Unit as a TimeSeries data binding
+- **TimeSeries-bound properties are INVISIBLE to GQL — by design** (the v3 dead end; this
+  is why no entity in `ontology.py` uses `timeseriesProperties`).
+  Binding `fct_summary` to a unit entity as a TimeSeries data binding
   deploys fine, but `u.MW` fails with "Property 'MW' does not exist in type" and
   `Timestamp` is a GQL reserved word. The graph model only materializes non-timeseries
   properties and edges; time series are meant to be queried through a separate surface
@@ -192,7 +197,8 @@ virtualization.
   which splits a question into GQL for structure + KQL for observations). So GQL alone
   can never aggregate a measure that lives in a time series — a graph-side MWh answer
   requires either an aggregate entity (the UnitDay pattern) or cross-engine routing.
-- **A leaf-grain fact table CAN live in the graph (verified in `ontology_v4.py`):**
+- **A leaf-grain fact table CAN live in the graph** (the v4 result, still the basis for
+  `Observation` in `ontology.py`)**:**
   11.28M Observation nodes (one per fct_summary row, three-part composite key
   `[DUID, DateKey, Interval]`) + 10.75M PRODUCED edges ingested in ~5 minutes, counts
   exact. `sum(o.MW)` over the AGL ownership traversal at 5-minute grain matches the SQL
@@ -258,7 +264,7 @@ virtualization.
   actually stored; `python data_agent.py --dump [name]` decodes any agent's stored
   definition when that bet needs checking against a portal-built agent.
 - **v5: the fix for bad measure answers was a smaller entity, not a better prompt.**
-  `ontology_v5.py` adds two tiny entity sets on the new marts — **RegionInterval** (373k
+  `ontology.py` adds two tiny entity sets on the new marts — **RegionInterval** (373k
   nodes from `fct_region`: demand, net interchange, available generation, and the ONE
   authoritative regional price) and **Flow** (298k from `fct_interconnector_derived`) —
   alongside v4's 11.9M `Observation`. Together they add ~5% to the load and remove the
@@ -307,12 +313,20 @@ virtualization.
   be formed of exactly one edge pattern in between two node patterns"). `shutdown.py`
   therefore walks one hop at a time and closes in Python. Modelling the link as an edge
   would allow `{1,n}` but lose per-link filtering, because relationship instances carry
-  no properties. GQL also has **no date functions or literals yet**, which is why
-  `agg_unit_daily` exposes a `UnitDayKey` string.
-- **GQL date ranges work via an ISO-date String property.** ISO-8601 strings order
-  lexicographically, so `agg_unit_daily` carries `DateKey` (`CAST(date AS VARCHAR)`)
-  and `WHERE ud.UnitDayDateKey >= '2026-08-03' AND ud.UnitDayDateKey <= '2026-08-09'`
-  filters a week fine — no per-day key-equality OR chains needed.
+  no properties. `shutdown.py` walks the closure in Python for exactly this reason.
+- **GQL date ranges work via an ISO-date String property.** GQL has **no date functions or
+  literals**, so every fact mart carries `DateKey` (`CAST(date AS VARCHAR)`). ISO-8601
+  strings order lexicographically, so
+  `WHERE ri.DateKey >= '2026-08-05' AND ri.DateKey <= '2026-08-11'` filters a week fine —
+  no per-day key-equality OR chains needed. Dates are also banned as entity **key** parts
+  (String/Integer only), which is the other reason `DateKey` exists.
+- **The latest day is almost always PARTIAL, so never divide by 288.** `fct_summary` carries
+  an intraday tail, so `max(DateKey)` is today with only the intervals published so far —
+  49 of 288 at the time of writing, which is why a week comes to 1,777 rows and not 2,016.
+  Averaging a region's demand as `sum(TotalDemand) / 288` therefore under-reports by the
+  fraction of the day elapsed (it showed TAS1 at 175 MW instead of ~1,030). Use `avg()` and
+  add the per-region averages, and print `count()` alongside so a partial day is visible
+  rather than silently wrong — the same discipline the data agent's instructions enforce.
 - **GQL aggregation: no `round()`, and grouping must be an explicit `GROUP BY`.**
   `sum`/`count`/`min`/`max` **and `avg`** all parse (verified against v4 — an earlier note
   here claimed only sum/count/max); there is still no `round()`, so round client-side.
