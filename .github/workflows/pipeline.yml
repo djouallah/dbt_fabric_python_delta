@@ -105,10 +105,13 @@ jobs:
           DAILY_EX=""; [ "$NEW_DAILY" = "0" ] && DAILY_EX="--exclude fct_price --exclude fct_scada"
           dbt run --exclude stg_csv_archive_log --exclude fct_summary+ $DAILY_EX $DBT \
             || { echo "::warning::dbt run failed — retrying once..."; sleep 60; dbt retry $DBT; }
-          # 4. Summary: overwrite when a new daily landed, else append intraday. `fct_summary+`
-          #    is the model AND its children (agg_region_daily), which must be built here
-          #    rather than in step 3 — downstream of fct_summary, they would otherwise
-          #    aggregate the PREVIOUS run's data and lag by one run.
+          # 4. Summary: overwrite when a new daily landed, else append intraday. fct_summary
+          #    has no children today, so `fct_summary+` is just the model; the `+` stays so a
+          #    future downstream model is built HERE rather than in step 3, where being
+          #    downstream of fct_summary would make it aggregate the PREVIOUS run's data.
+          #    The new marts (fct_region, fct_unit_dispatch, fct_interconnector*,
+          #    fct_constraint) hang off fct_price/fct_scada, NOT fct_summary, so step 3 builds
+          #    them — correct, since they read the landing Delta tables rather than the CSVs.
           FR=""; { [ "$NEW_DAILY" = "1" ] || [ "${{ inputs.full_refresh }}" = "true" ]; } && FR="--full-refresh"
           dbt run --select fct_summary+ $FR $DBT
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true

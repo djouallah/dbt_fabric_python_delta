@@ -52,7 +52,8 @@ hasn't loaded yet and inserts them idempotently, keyed on the filename:
 | Strategy | Behavior | Used by |
 |----------|----------|---------|
 | `insert` | Insert only new keys (idempotent) | fact models (keyed on `file`), `stg_csv_archive_log` |
-| `insert` + overwrite | Intraday: insert new `(date,time,DUID)` rows (dup-safe, never updates); **overwrite** the whole table when a new **daily** file lands (`config(full_refresh=has_new_daily)`) | `fct_summary` |
+| `insert` + overwrite | Intraday: insert new `(date,time,DUID)` rows (dup-safe, never updates); **overwrite** the whole table when a new **daily** file lands. The overwrite is decided by the **runner**, not the model — `full_refresh` is fixed at parse time, so both runners call the `check_new_daily` run-operation and only then rerun with `--full-refresh` | `fct_summary` |
+| `insert` (date-keyed) | Project a landing table into `mart`, skipping dates already present | `fct_region`, `fct_unit_dispatch`, `fct_interconnector_derived` |
 | `merge` | Upsert — update matched, insert new | `dim_duid` (attributes change; key `DUID`) |
 | `append` (one-off) | Built once; later runs select nothing (`WHERE 1=0`) → no-op | `dim_calendar` (fixed, generated) |
 
@@ -62,8 +63,15 @@ hasn't loaded yet and inserts them idempotently, keyed on the filename:
 
 ## Schema layout
 
-- **`landing`** — staging and incremental fact tables (source ingestion, deduplication): `fct_scada`, `fct_price`
-- **`mart`** — Power BI-facing models (joined, aggregated, ready for Direct Lake): `dim_duid`, `fct_summary`
+- **`landing`** — staging and incremental fact tables (source ingestion, deduplication):
+  `fct_scada` (AEMO `DUNIT`, all 49 columns), `fct_price` (AEMO `DREGION`, all 126 columns —
+  demand and net interchange live here, not just price), `fct_scada_today`, `fct_price_today`,
+  `fct_interconnector_today`, `fct_constraint_today`
+- **`mart`** — Power BI-facing models (joined, ready for Direct Lake): `dim_*`, `fct_summary`
+  (unit MW + price, with the live intraday tail), `fct_region` (demand, net interchange,
+  available generation), `fct_unit_dispatch` (offered vs dispatched, ramp rates, FCAS),
+  `fct_interconnector` + `fct_interconnector_derived` (per-link flows; derived covers full
+  history), `fct_constraint` (limits that actually bound)
 
 ---
 

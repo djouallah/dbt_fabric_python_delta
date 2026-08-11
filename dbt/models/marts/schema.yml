@@ -90,3 +90,141 @@ models:
           - not_null:
               config:
                 tags: [heavy]
+      - name: RegionID
+        description: Carried so region filtering needs no dim_duid re-join
+        tests:
+          - accepted_values:
+              values: ['QLD1', 'NSW1', 'VIC1', 'SA1', 'TAS1', 'WA1']
+              config:
+                tags: [heavy]
+
+  - name: fct_region
+    description: >
+      Regional dispatch outcome at 5-minute grain from AEMO's DREGION record: demand,
+      net interchange, available generation. NetInterchange is POSITIVE when the region
+      is a net exporter.
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: RegionID
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['QLD1', 'NSW1', 'VIC1', 'SA1', 'TAS1', 'WA1']
+          - relationships:
+              to: ref('dim_region')
+              field: RegionID
+      - name: TotalDemand
+        description: Regional demand in MW
+        tests:
+          - not_null
+      - name: NetInterchange
+        description: Net export in MW; negative means the region is importing
+        tests:
+          - not_null
+
+  - name: fct_unit_dispatch
+    description: >
+      Wide unit dispatch at 5-minute grain from AEMO's DUNIT record. Unlike fct_summary this
+      keeps rows where the unit was NOT dispatched, because AvailableMW on an undispatched
+      unit is what makes real headroom computable.
+    columns:
+      - name: date
+        tests:
+          - not_null:
+              config:
+                tags: [heavy]
+      - name: DUID
+        tests:
+          - not_null:
+              config:
+                tags: [heavy]
+          - relationships:
+              to: ref('dim_duid')
+              field: DUID
+              config:
+                severity: warn
+                tags: [heavy]
+      - name: AvailableMW
+        description: Capacity the unit offered for this interval
+      - name: HeadroomMW
+        description: AvailableMW - InitialMW; offered but not dispatched
+
+  - name: fct_interconnector
+    description: >
+      Per-link flow and transfer limits from the DISPATCHIS INTERCONNECTORRES record.
+      Intraday only - the daily archive carries no interconnector data, so this table has
+      no back-history and accumulates forward.
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: InterconnectorID
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_interconnector')
+              field: InterconnectorID
+      - name: MWFlow
+        description: Dispatch target flow, positive in the FromRegion -> ToRegion direction
+
+  - name: fct_interconnector_derived
+    description: >
+      Region-pair flows for the FULL history, solved from fct_region.NetInterchange. Exact
+      only while the NEM is a tree - retire this in favour of fct_interconnector once
+      EnergyConnect (PEC) commissions and closes the SA1-NSW1 cycle.
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: LinkID
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['QLD1-NSW1', 'VIC1-NSW1', 'SA1-VIC1', 'TAS1-VIC1']
+      - name: FlowMW
+        tests:
+          - not_null
+      - name: NetworkLossMW
+        description: Sum of every region's net injection; NEM-wide transmission loss
+
+  - name: fct_constraint
+    description: >
+      Network constraints that actually bound (nonzero marginal value) or were violated,
+      from the DISPATCHIS CONSTRAINT record. Intraday only, no back-history.
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: ConstraintID
+        tests:
+          - not_null
+      - name: MarginalValue
+        description: $/MW shadow price of relaxing the constraint by one MW
+
+  - name: fct_interconnector_today
+    description: Raw INTERCONNECTORRES records from the intraday DISPATCHIS report
+    columns:
+      - name: INTERCONNECTORID
+        tests:
+          - not_null
+      - name: SETTLEMENTDATE
+        tests:
+          - not_null
+      - name: file
+        tests:
+          - not_null
+
+  - name: fct_constraint_today
+    description: Raw CONSTRAINT records from the intraday DISPATCHIS report
+    columns:
+      - name: CONSTRAINTID
+        tests:
+          - not_null
+      - name: SETTLEMENTDATE
+        tests:
+          - not_null
+      - name: file
+        tests:
+          - not_null

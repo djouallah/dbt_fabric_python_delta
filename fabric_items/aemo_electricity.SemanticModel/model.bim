@@ -181,8 +181,16 @@
             "summarizeBy": "none"
           },
           {
+            "name": "RegionID",
+            "dataType": "string",
+            "description": "NEM region code — carried on the fact so region filtering needs no dim_duid hop",
+            "sourceColumn": "RegionID",
+            "sourceLineageTag": "RegionID",
+            "summarizeBy": "none"
+          },
+          {
             "name": "mw",
-            "dataType": "decimal",
+            "dataType": "double",
             "description": "Power output in megawatts (MW) for this 5-minute interval",
             "formatString": "#,##0.00",
             "sourceColumn": "mw",
@@ -191,7 +199,7 @@
           },
           {
             "name": "price",
-            "dataType": "decimal",
+            "dataType": "double",
             "description": "Regional reference price in AUD per megawatt-hour ($/MWh)",
             "formatString": "$#,##0.00",
             "sourceColumn": "price",
@@ -252,6 +260,289 @@
             }
           }
         ]
+      },
+      {
+        "name": "dim_region",
+        "description": "NEM/WEM region dimension. Five NEM regions plus WA1, which is a physically separate market and should be excluded from NEM-wide totals.",
+        "sourceLineageTag": "[aemo].[dim_region]",
+        "columns": [
+          {
+            "name": "RegionID",
+            "dataType": "string",
+            "description": "Region code (primary key): NSW1, QLD1, SA1, TAS1, VIC1, WA1",
+            "isKey": true,
+            "sourceColumn": "RegionID",
+            "sourceLineageTag": "RegionID",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "State",
+            "dataType": "string",
+            "description": "Australian state name",
+            "sourceColumn": "State",
+            "sourceLineageTag": "State",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "Market",
+            "dataType": "string",
+            "description": "NEM (National Electricity Market) or WEM (Western Australia)",
+            "sourceColumn": "Market",
+            "sourceLineageTag": "Market",
+            "summarizeBy": "none"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "dim_region",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "dim_region",
+              "expressionSource": "DirectLake",
+              "schemaName": "mart"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fct_region",
+        "description": "Regional dispatch outcome from AEMO's DREGION record.\nGrain: one row per 5-minute dispatch interval per region.\nCarries demand, net interchange and available generation — none of which were exposed before.",
+        "sourceLineageTag": "[aemo].[fct_region]",
+        "columns": [
+          {
+            "name": "date",
+            "dataType": "dateTime",
+            "description": "Dispatch date",
+            "formatString": "yyyy-MM-dd",
+            "sourceColumn": "date",
+            "sourceLineageTag": "date",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "time",
+            "dataType": "int64",
+            "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
+            "sourceColumn": "time",
+            "sourceLineageTag": "time",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "RegionID",
+            "dataType": "string",
+            "description": "NEM region code — foreign key to dim_region",
+            "sourceColumn": "RegionID",
+            "sourceLineageTag": "RegionID",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "TotalDemand",
+            "dataType": "double",
+            "description": "Regional demand in MW at this interval (instantaneous power, not energy)",
+            "formatString": "#,##0",
+            "sourceColumn": "TotalDemand",
+            "sourceLineageTag": "TotalDemand",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "NetInterchange",
+            "dataType": "double",
+            "description": "Net export in MW. POSITIVE means the region is EXPORTING; negative means importing.",
+            "formatString": "#,##0",
+            "sourceColumn": "NetInterchange",
+            "sourceLineageTag": "NetInterchange",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "AvailableGeneration",
+            "dataType": "double",
+            "description": "Total capacity offered by generators in the region for this interval",
+            "formatString": "#,##0",
+            "sourceColumn": "AvailableGeneration",
+            "sourceLineageTag": "AvailableGeneration",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "DispatchableGeneration",
+            "dataType": "double",
+            "description": "Scheduled generation dispatched in the region",
+            "formatString": "#,##0",
+            "sourceColumn": "DispatchableGeneration",
+            "sourceLineageTag": "DispatchableGeneration",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "price",
+            "dataType": "double",
+            "description": "Regional reference price in AUD per megawatt-hour ($/MWh)",
+            "formatString": "$#,##0.00",
+            "sourceColumn": "price",
+            "sourceLineageTag": "price",
+            "summarizeBy": "none"
+          }
+        ],
+        "measures": [
+          {
+            "name": "Avg Demand MW",
+            "description": "Average regional demand in MW. Demand is instantaneous power, so it is averaged across intervals, never summed.",
+            "expression": "AVERAGE(fct_region[TotalDemand])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Peak Demand MW",
+            "description": "Highest 5-minute regional demand in the current selection",
+            "expression": "MAX(fct_region[TotalDemand])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Demand Energy MWh",
+            "description": "Energy consumed. Divides by 12 because each row covers 5 minutes (60/5 = 12).",
+            "expression": "SUM(fct_region[TotalDemand]) / 12",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Net Interchange MW",
+            "description": "Average net export in MW. Positive = the region exports on balance, negative = it imports.",
+            "expression": "AVERAGE(fct_region[NetInterchange])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Available Generation MW",
+            "description": "Average capacity offered by generators in the region",
+            "expression": "AVERAGE(fct_region[AvailableGeneration])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Reserve Margin MW",
+            "description": "Offered capacity less demand — how much spare generation the region had. Now measured rather than inferred from observed peaks.",
+            "expression": "[Available Generation MW] - [Avg Demand MW]",
+            "formatString": "#,##0"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "fct_region",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "fct_region",
+              "expressionSource": "DirectLake",
+              "schemaName": "mart"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fct_interconnector_derived",
+        "description": "Power flow between regions for the full history, solved from NetInterchange.\nGrain: one row per 5-minute interval per region-pair.\nValid only while the NEM is a tree — retire in favour of fct_interconnector once EnergyConnect (SA1-NSW1) commissions.",
+        "sourceLineageTag": "[aemo].[fct_interconnector_derived]",
+        "columns": [
+          {
+            "name": "date",
+            "dataType": "dateTime",
+            "description": "Dispatch date",
+            "formatString": "yyyy-MM-dd",
+            "sourceColumn": "date",
+            "sourceLineageTag": "date",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "time",
+            "dataType": "int64",
+            "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
+            "sourceColumn": "time",
+            "sourceLineageTag": "time",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "LinkID",
+            "dataType": "string",
+            "description": "Region pair: QLD1-NSW1, VIC1-NSW1, SA1-VIC1 or TAS1-VIC1",
+            "sourceColumn": "LinkID",
+            "sourceLineageTag": "LinkID",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "LinkName",
+            "dataType": "string",
+            "description": "Physical interconnectors on that corridor (e.g. 'QNI + Terranora')",
+            "sourceColumn": "LinkName",
+            "sourceLineageTag": "LinkName",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "FromRegion",
+            "dataType": "string",
+            "description": "Region the flow is measured FROM",
+            "sourceColumn": "FromRegion",
+            "sourceLineageTag": "FromRegion",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "ToRegion",
+            "dataType": "string",
+            "description": "Region the flow is measured TO",
+            "sourceColumn": "ToRegion",
+            "sourceLineageTag": "ToRegion",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "FlowMW",
+            "dataType": "double",
+            "description": "Power flow in MW, positive in the FromRegion -> ToRegion direction",
+            "formatString": "#,##0",
+            "sourceColumn": "FlowMW",
+            "sourceLineageTag": "FlowMW",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "NetworkLossMW",
+            "dataType": "double",
+            "description": "NEM-wide transmission loss for the interval. Repeated on all four rows of an interval, so average it — never sum.",
+            "formatString": "#,##0",
+            "sourceColumn": "NetworkLossMW",
+            "sourceLineageTag": "NetworkLossMW",
+            "summarizeBy": "none"
+          }
+        ],
+        "measures": [
+          {
+            "name": "Avg Flow MW",
+            "description": "Average power flow on the selected corridor, positive in the FromRegion -> ToRegion direction",
+            "expression": "AVERAGE(fct_interconnector_derived[FlowMW])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Peak Flow MW",
+            "description": "Largest flow observed in the FromRegion -> ToRegion direction",
+            "expression": "MAX(fct_interconnector_derived[FlowMW])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Peak Reverse Flow MW",
+            "description": "Largest flow in the reverse direction (most negative FlowMW)",
+            "expression": "MIN(fct_interconnector_derived[FlowMW])",
+            "formatString": "#,##0"
+          },
+          {
+            "name": "Transmission Loss MW",
+            "description": "Average NEM-wide transmission loss. Averaged because the value repeats across the four corridor rows of each interval.",
+            "expression": "AVERAGE(fct_interconnector_derived[NetworkLossMW])",
+            "formatString": "#,##0"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "fct_interconnector_derived",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "fct_interconnector_derived",
+              "expressionSource": "DirectLake",
+              "schemaName": "mart"
+            }
+          }
+        ]
       }
     ],
     "relationships": [
@@ -266,6 +557,38 @@
       {
         "name": "fct_summary_to_dim_calendar",
         "fromTable": "fct_summary",
+        "fromColumn": "date",
+        "toTable": "dim_calendar",
+        "toColumn": "date",
+        "relyOnReferentialIntegrity": true
+      },
+      {
+        "name": "fct_summary_to_dim_region",
+        "fromTable": "fct_summary",
+        "fromColumn": "RegionID",
+        "toTable": "dim_region",
+        "toColumn": "RegionID",
+        "relyOnReferentialIntegrity": true
+      },
+      {
+        "name": "fct_region_to_dim_region",
+        "fromTable": "fct_region",
+        "fromColumn": "RegionID",
+        "toTable": "dim_region",
+        "toColumn": "RegionID",
+        "relyOnReferentialIntegrity": true
+      },
+      {
+        "name": "fct_region_to_dim_calendar",
+        "fromTable": "fct_region",
+        "fromColumn": "date",
+        "toTable": "dim_calendar",
+        "toColumn": "date",
+        "relyOnReferentialIntegrity": true
+      },
+      {
+        "name": "fct_interconnector_derived_to_dim_calendar",
+        "fromTable": "fct_interconnector_derived",
         "fromColumn": "date",
         "toTable": "dim_calendar",
         "toColumn": "date",

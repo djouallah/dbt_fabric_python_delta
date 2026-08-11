@@ -135,9 +135,13 @@ Relationship types, with direction:
 - RegCapMW is registered CAPACITY (nameplate, a static property). Observation.MW is actual
   metered OUTPUT at a point in time. "Capacity" means RegCapMW; "generation", "output" or
   "what it produced" means Observation.MW. Do not substitute one for the other.
-- An Observation is one 5-minute reading for one unit. `Interval` is MINUTES PAST MIDNIGHT
-  -- 0, 5, 10, ... 1435 -- NOT a slot index counting from 1. So Interval 0 is 00:00,
-  750 is 12:30, and clock time = Interval / 60 hours. There are 288 intervals in a day.
+- An Observation is one 5-minute reading for one unit. `Interval` is the clock time encoded
+  as HHMM -- 0, 5, 10, ... 55, 100, 105, ... 2350, 2355. It is NOT minutes past midnight and
+  NOT a slot index. Interval 0 is 00:00, 100 is 01:00, 1230 is 12:30, 2355 is 23:55; the
+  maximum is 2355 and there are 288 distinct values per day. Decode it as
+  hour = Interval / 100 and minute = Interval % 100. Because it is HHMM, the values are NOT
+  evenly spaced -- there is no value between 55 and 100 -- so never do arithmetic on
+  Interval as if it were a duration.
 - You have no clock and cannot resolve a relative date on your own. "Today", "latest",
   "last week", "recently" must be anchored by first running
   MATCH (o:Observation) RETURN max(o.DateKey) AS latest
@@ -202,12 +206,20 @@ MATCH (u:`Unit`)-[:PRODUCED]->(o:Observation)
 WHERE u.Region = 'SA1' AND o.DateKey >= '2026-08-05' AND o.DateKey <= '2026-08-11'
 RETURN o.DateKey AS day, avg(o.Price) AS price GROUP BY day ORDER BY day
 
-Q: A unit's output through one day, half-hour by half-hour. Note that even a "time series"
-   answer goes through an aggregate -- never return bare Observation rows.
+Q: A unit's output through one day, interval by interval. Note that even a "time series"
+   answer goes through an aggregate -- never return bare Observation rows. time_hhmm comes
+   back as 0, 5, ... 55, 100, 105 ... which is the clock, not a running minute count.
 MATCH (o:Observation)
 WHERE o.DUID = 'BW01' AND o.DateKey = '2026-08-09'
-RETURN o.`Interval` AS minutes_past_midnight, avg(o.MW) AS mw
-GROUP BY minutes_past_midnight ORDER BY minutes_past_midnight
+RETURN o.`Interval` AS time_hhmm, avg(o.MW) AS mw
+GROUP BY time_hhmm ORDER BY time_hhmm
+
+Q: Output during the evening peak (18:00 to 20:00) on one day. HHMM compares numerically,
+   so a contiguous clock window is a simple BETWEEN.
+MATCH (u:`Unit`)-[:PRODUCED]->(o:Observation)
+WHERE u.Region = 'SA1' AND o.DateKey = '2026-08-09'
+  AND o.`Interval` >= 1800 AND o.`Interval` <= 2000
+RETURN sum(o.MW) * 5 / 60 AS mwh, count(o.MW) AS readings
 
 Q: Which regions are one in-service interconnector hop from Tasmania?
 MATCH (r1:Region)<-[:CONNECTS_FROM|CONNECTS_TO]-(i:Interconnector)

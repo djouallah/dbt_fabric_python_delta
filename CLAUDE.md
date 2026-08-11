@@ -81,13 +81,59 @@ virtualization.
   so it builds in full on the first run and is a no-op afterward (dbt's "create if not exists, else skip").
   `fct_summary` uses `incremental_strategy='insert'` on `['date','time','DUID']` (dup-safe,
   insert-only — never blind `append`, never updates a key) for intraday rows, and
-  **overwrite** when a new **daily** file arrives. The overwrite is duckrun-native:
-  the model computes `has_new_daily` (before `config`) and sets `config(full_refresh=has_new_daily)`,
-  so `_delta_core.sql` passes `full_refresh` to the delta-write plugin which rewrites the
-  table fresh. duckrun has NO `overwrite` incremental strategy — overwrite IS `full_refresh`.
+  **overwrite** when a new **daily** file arrives. **The overwrite is decided by the RUNNER,
+  not the model** — `full_refresh` is fixed at parse time (`execute=False`) so a run-time
+  probe cannot toggle it, and the old `has_new_daily`/`config(full_refresh=…)` trick was
+  always pinned to overwrite. Both runners (the notebook and CI) call the `check_new_daily`
+  run-operation first, which raises `NEW_DAILY_PENDING`, and only then rerun
+  `dbt run --select fct_summary+ --full-refresh`. duckrun has NO `overwrite` incremental
+  strategy — overwrite IS `full_refresh`.
+  `check_new_daily` **hardcodes the `landing/fct_scada` path** in raw SQL (raw SQL bypasses
+  duckrun's shorthand expander, so it uses `target.root_path`); renaming or moving that table
+  means editing the macro in lockstep.
   Do NOT use a `DELETE FROM`/`TRUNCATE` pre_hook (`{{ this }}` is a `delta_scan` view, not
   writable), and do NOT switch to `materialized='table'` (that overwrites every run and
   loses the intraday-append optimization).
+- **The landing tables were always complete; the mart layer was the bottleneck.**
+  `fct_price` is not a price table — it is AEMO's **DREGION** record, all 126 source columns
+  ingested, including `TOTALDEMAND`, `NETINTERCHANGE`, `DISPATCHABLEGENERATION/LOAD` and
+  `AVAILABLEGENERATION`. `fct_scada` is the full **DUNIT** record, all 49 columns, including
+  `TOTALCLEARED` and `AVAILABILITY`. `fct_summary` exposed 4 of those ~175 columns, and
+  everything downstream (Direct Lake, ontology, data agent) binds to `fct_summary` — so the
+  whole analytical surface was 4 columns wide. Hence `fct_region`, `fct_unit_dispatch`,
+  `fct_interconnector`, `fct_interconnector_derived` and `fct_constraint`. **No new ingest
+  was needed for any of the daily ones** — they are projections of tables already landed.
+- **`NETINTERCHANGE` is positive when a region is a net EXPORTER.** Verified by the identity
+  that holds every interval to 0.01 MW: `DISPATCHABLEGENERATION − DISPATCHABLELOAD −
+  NETINTERCHANGE = TOTALDEMAND`. Getting this backwards silently inverts every flow answer.
+- **The NEM is a TREE, so every interconnector flow is recoverable from `NETINTERCHANGE`
+  alone.** `QLD1–NSW1–VIC1–SA1` with `TAS1` off `VIC1`: n nodes, n−1 edges, so n−1 net
+  injections determine all edge flows. That is what `fct_interconnector_derived` does, and it
+  is the only way to get **historical** flows — the `PUBLIC_DAILY` archive contains no
+  interconnector record at all (only `DUNIT`, `DREGION`, `DISPATCH.CASESOLUTION`,
+  `DISPATCH.REGIONFCASREQUIREMENT`). Validation: the residual `sum(NETINTERCHANGE)` averages
+  **+122.9 MW and is always positive** — that is transmission loss, and a sign error would
+  swing it negative. Cross-check: TAS1's extreme import is **−478.0 MW**, Basslink's nameplate
+  rating exactly. **This dies the day EnergyConnect (PEC, SA1↔NSW1) commissions** and closes a
+  cycle; `assert_network_residual_is_loss.sql` is the tripwire, and the fix is to retire the
+  model in favour of `fct_interconnector`, not to patch it.
+- **The intraday DISPATCHIS files carry six record types beyond the one being read.**
+  `fct_price_today`'s `WHERE I='D' AND PRICE='PRICE'` filter was discarding
+  `INTERCONNECTORRES` (per-link `MWFLOW`, `EXPORTLIMIT`, `IMPORTLIMIT` — real transfer
+  limits), `CONSTRAINT` (1,053 rows/interval: which limits bound and their shadow prices),
+  `REGIONSUM`, `LOCAL_PRICE`, `INTERCONNECTION` and `CASE_SOLUTION`. `fct_interconnector_today`
+  and `fct_constraint_today` read the **same archive files** with a different record filter —
+  no new download, no change to `stg_csv_archive_log.py`. Each record type has a different
+  width, so each needs its own `columns={...}` list and its own `RECORD = '…'` filter.
+  These are **intraday-only with no back-history**: DISPATCHIS is a Current report on a
+  rolling ~2-day window, so the tables start empty and accumulate forward. That is AEMO's
+  publishing, not a bug.
+- **`fct_unit_dispatch` deliberately does NOT filter `INITIALMW <> 0`**, unlike `fct_summary`.
+  A unit that offered capacity and was not dispatched is the most valuable row in the table —
+  it is what makes headroom (`AVAILABILITY − INITIALMW`) a measured number instead of one
+  inferred from observed peaks. Measured: on one QLD coal day, 2,592 of 8,064 rows are
+  undispatched, and average `AVAILABILITY` (250 MW) exceeds average `INITIALMW` (169 MW).
+  Cost is ~3× `fct_summary`'s row count.
 - **No DuckDB version pin** and no `force install iceberg/avro from core_nightly`.
   Only the `azure` extension is needed (for abfss CSV reads); duckrun bundles
   `dbt-duckdb` + `deltalake` and auto-creates the DuckDB Azure secret from the token.
@@ -104,13 +150,20 @@ virtualization.
   in `RETURN`, `WHERE` and `GROUP BY` alike. Note `ontology_v4.py` renamed `time` →
   `Interval` specifically to dodge `TIME` being reserved, and landed on another reserved
   word; the binding is fine, only unbackticked references fail. See `gql.py`.
-- **`Observation.Interval` is MINUTES PAST MIDNIGHT (0, 5, … 1435), not a 1-288 slot
-  index.** It comes from `fct_summary.time`. Clock time = `Interval / 60` hours.
+- **`fct_summary.time` (and so `Observation.Interval`) is HHMM, not minutes past midnight.**
+  `CAST(strftime(SETTLEMENTDATE, '%H%M') AS INT)` → `0, 5, … 55, 100, 105, … 2355`; min 0,
+  max 2355, 288 distinct. Decode as `hour = time / 100`, `minute = time % 100`. The values
+  are deliberately **not** evenly spaced (nothing between 55 and 100), so never treat it as
+  a duration — but it does compare numerically, so a clock window is a plain
+  `BETWEEN 1800 AND 2000`. An earlier note here claimed minutes-past-midnight; that was
+  wrong, and only looked right because the first hour (0, 5, 10, 15) is identical either way.
 - **Bind `DOUBLE`, never `DECIMAL(p, s)`, to a Double ontology property.** The type map
   sends bare `decimal`/`double`/`float` to Double but a *parameterised* `decimal(p, s)`
   to **String** — so a `DECIMAL(18,2)` column bound to a Double property ingests as all
-  NULL, silently, with no error anywhere. `agg_unit_daily` casts to `DOUBLE` for this
-  reason; `fct_summary` keeps `DECIMAL` because it is not bound to the ontology.
+  NULL, silently, with no error anywhere. **Every mart casts measures to `DOUBLE`** for this
+  reason — `fct_summary` included (it emits `DOUBLE`, not `DECIMAL`, despite an earlier note
+  here saying otherwise), and so do `fct_region`, `fct_unit_dispatch`, `fct_interconnector`,
+  `fct_interconnector_derived` and `fct_constraint`.
 - **Composite entity keys and duplicate property names DO work — verified in
   `ontology_v2.py`.** `entityIdParts` takes multiple property ids and a contextualization
   binds multiple key-ref columns: 49,245 UnitDay nodes keyed `[DUID, DateKey]` ingested

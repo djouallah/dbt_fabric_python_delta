@@ -27,6 +27,7 @@ incremental_data AS (
     s.DATE as date,
     s.SETTLEMENTDATE,
     s.DUID,
+    d.Region AS RegionID,
     MAX(s.INITIALMW) AS mw,
     MAX(p.RRP) AS price
   FROM {{ ref('fct_scada_today') }} s
@@ -43,8 +44,11 @@ incremental_data AS (
 
 SELECT
   date,
+  -- HHMM, not minutes past midnight: 0, 5, ... 1255, 1300, ... 2355. 288 distinct values.
   CAST(strftime(SETTLEMENTDATE, '%H%M') AS INT) AS time,
   DUID,
+  -- Carried so region filtering doesn't need a dim_duid re-join. Both branches must set it.
+  RegionID,
   -- DOUBLE, not DECIMAL(18,4): the ontology's v3 TimeSeries binding maps parameterised
   -- decimals to String properties, which ingest as NULL against a Double property.
   CAST(mw AS DOUBLE) AS mw,
@@ -64,6 +68,7 @@ WITH daily_summary AS (
     s.DATE as date,
     CAST(strftime(s.SETTLEMENTDATE, '%H%M') AS INT) as time,
     s.DUID,
+    d.Region AS RegionID,
     MAX(s.INITIALMW) as mw,
     MAX(p.RRP) as price
   FROM {{ ref('fct_scada') }} s
@@ -82,6 +87,7 @@ WITH daily_summary AS (
     s.DATE as date,
     CAST(strftime(s.SETTLEMENTDATE, '%H%M') AS INT) as time,
     s.DUID,
+    d.Region AS RegionID,
     MAX(s.INITIALMW) as mw,
     MAX(p.RRP) as price
   FROM {{ ref('fct_scada_today') }} s
@@ -99,7 +105,8 @@ SELECT
   date,
   time,
   DUID,
-  -- DOUBLE + ts: see the incremental branch comment; both branches must stay in lockstep.
+  RegionID,
+  -- DOUBLE + RegionID: see the incremental branch comment; both branches stay in lockstep.
   CAST(mw AS DOUBLE) AS mw,
   CAST(price AS DOUBLE) AS price,
   CAST(date AS VARCHAR) AS DateKey,
