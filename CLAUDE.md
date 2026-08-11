@@ -98,9 +98,14 @@ virtualization.
   never executes seeds at all. `dim_region`, `dim_interconnector` and
   `dim_participant_parent` follow this pattern. Adding a `seeds/` directory would mean
   adding a `dbt seed` step to *both* runners and keeping them in parity — don't.
-- **`Unit` is a reserved word in Fabric GQL.** A bare `(u:Unit)` fails as a *syntax*
-  error, not "no such label", so it reads like the data binding broke. Backtick it:
-  ``(u:`Unit`)``. See `gql.py`.
+- **`Unit` and `Interval` are reserved words in Fabric GQL.** A bare `(u:Unit)` or a bare
+  `o.Interval` fails as a *syntax* error, not "no such label/property", so it reads like
+  the data binding broke. Backtick both — ``(u:`Unit`)``, ``o.`Interval` `` — which works
+  in `RETURN`, `WHERE` and `GROUP BY` alike. Note `ontology_v4.py` renamed `time` →
+  `Interval` specifically to dodge `TIME` being reserved, and landed on another reserved
+  word; the binding is fine, only unbackticked references fail. See `gql.py`.
+- **`Observation.Interval` is MINUTES PAST MIDNIGHT (0, 5, … 1435), not a 1-288 slot
+  index.** It comes from `fct_summary.time`. Clock time = `Interval / 60` hours.
 - **Bind `DOUBLE`, never `DECIMAL(p, s)`, to a Double ontology property.** The type map
   sends bare `decimal`/`double`/`float` to Double but a *parameterised* `decimal(p, s)`
   to **String** — so a `DECIMAL(18,2)` column bound to a Double property ingests as all
@@ -133,6 +138,63 @@ virtualization.
   ~37s (vs seconds in DuckDB); fact rows whose DUID is missing from dim_duid become
   edge-less orphan nodes (~530k); and the FIRST heavy query after a load can return
   status 00000 with EMPTY data — treat an empty aggregate result as suspect and retry.
+- **A Data Agent is deployable code-first; its API mirrors `/ontologies`.** `data_agent.py`
+  lists/creates/updates `{API}/workspaces/{ws}/dataAgents` with base64 definition parts
+  exactly like the ontology scripts, then **`POST .../dataAgents/{id}/staging/publish`** —
+  publishing is NOT optional, because the MCP endpoint `ask.py` queries
+  (`{API}/mcp/workspaces/{ws}/dataagents/{id}/agent`, note the **lowercase** `dataagents`
+  there vs `dataAgents` on the management path) errors until the agent is published once.
+  `getDefinition` is an LRO whose payload is at `{Location}/result`, not in the
+  operation-status body, so the shared `call()` helper is not enough for it.
+- **The Ontology data source is STRICTER than raw GQL against the GraphModel.** Queries
+  `gql.py` runs happily via `/GraphModels/{id}/executeQuery` are rejected when the Data
+  Agent runs them through the ontology: returning a bare `o.MW` / `o.Price` per row fails
+  with *"The field 'Price' is not configured for time series data"* — an error about the
+  query SHAPE, not the binding. Wrap the measure in `sum`/`avg`/… with an explicit
+  `GROUP BY` and the same field works. So `aiInstructions` must forbid un-aggregated
+  Observation returns outright.
+- **A comma-joined multi-pattern `MATCH` over Observation is a fan-out, not a filter.**
+  `MATCH (u:`Unit`)-[:PRODUCED]->(o:Observation), (u)-[:PART_OF]->(s:Station), …` inflated
+  one day of SA1 from 15,032 readings to 2,076,155 (138×) and the answer with it. Filter on
+  `Unit`'s own `Region` property instead of traversing to Station→Region.
+- **Measure answers from the Data Agent are NOT trustworthy; structural answers are.**
+  This is the honest verdict of `ask.py`. Ownership/topology questions (AGL's capacity incl.
+  subsidiaries, Basslink islanding TAS1, gen+load stations, shared SA/VIC owners, top-10 by
+  capacity) come back correct and repeatable. Aggregations over the 11M `Observation` nodes
+  do not: the same question answered **exactly** right once (SA1 2026-08-09 = $35.145 from
+  15,032 readings / 66 units, and 46,351.5 MWh) and then, unprompted, **$111.12 from
+  1,329,227 readings / 80 units** — an 88× fan-out — on a later run, with the instruction
+  forbidding extra MATCH patterns still in place. It has also silently reported `sum(o.MW)`
+  as MWh (556,218 vs 46,352 — the 5/60 factor dropped). Instructions reduce these but do
+  not eliminate them, because the fan-out is the NL2Ontology planner's choice, not the
+  prompt's. **Mitigation that actually works:** require every measure answer to also return
+  `count(o.MW)` and `count(DISTINCT u.DUID)` in the same query. It does not prevent the bad
+  number, but it makes it visible — an inflated scope is the tell, and without it the wrong
+  number arrives stated confidently as fact.
+- **`updateDefinition?updateMetadata=true` requires a `.platform` part** (`InvalidInput:
+  "UpdateMetadata is true but .platform file was not provided"`). The ontology scripts ship
+  one so the flag is fine there; the Data Agent definition has no `.platform` part, so
+  `data_agent.py` must omit the flag.
+- **The Data Agent is not deterministic, and it degrades under back-to-back load.** The
+  same question against the same published agent answers correctly on one run and returns
+  "a technical issue" (or a bare HTTP 500) on the next. Asking all nine `ask.py` questions
+  in a row dropped it to 4/9, including questions that had just passed; "top 10 stations by
+  registered capacity" failed in the batch and passed immediately when asked with spacing.
+  `ask.py` therefore sleeps 20s between questions and retries once, printing the retry
+  rather than hiding it — needing a retry is a quality signal, not noise.
+- **An ontology data source has ONE tuning surface: `aiInstructions`.** Unlike a `graph`
+  data source, an ontology source accepts no `fewshots.json` and no data-source
+  instructions — so the schema map, glossary, GQL dialect rules and worked question→GQL
+  exemplars all have to be inlined into that single string in
+  `Files/Config/draft/stage_config.json`. Two non-obvious requirements: the instructions
+  must literally contain **`Support group by in GQL`** (Microsoft's documented workaround
+  for an aggregation known-issue — without it grouped questions fail), and the datasource
+  folder name is literally `{dataSourceType}-{dataSourceName}`, which must agree with the
+  `type` field inside `datasource.json`. The documented `type` enum
+  (`lakehouse_tables`/`data_warehouse`/`kusto`/`semantic_model`/`graph`/…) does **not** list
+  an ontology value, so `data_agent.py` bets on `"ontology"` and echoes back what Fabric
+  actually stored; `python data_agent.py --dump [name]` decodes any agent's stored
+  definition when that bet needs checking against a portal-built agent.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).
@@ -149,7 +211,9 @@ virtualization.
   and `WHERE ud.UnitDayDateKey >= '2026-08-03' AND ud.UnitDayDateKey <= '2026-08-09'`
   filters a week fine — no per-day key-equality OR chains needed.
 - **GQL aggregation: no `round()`, and grouping must be an explicit `GROUP BY`.**
-  Only `sum`/`count`/`max`-style aggregates parse; round client-side. Mixing a plain
+  `sum`/`count`/`min`/`max` **and `avg`** all parse (verified against v4 — an earlier note
+  here claimed only sum/count/max); there is still no `round()`, so round client-side.
+  Mixing a plain
   property with an aggregate in `RETURN` fails ("neither part of the GROUP BY nor an
   aggregation") — Cypher-style implicit grouping does not exist; write
   `RETURN ud.UnitDayDateKey AS day, sum(...) AS mwh GROUP BY day ORDER BY day`.
