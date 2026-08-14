@@ -1,4 +1,4 @@
-# GQL verification harness against the aemo_nem_v5 graph.
+﻿# GQL verification harness against the aemo_nem graph.
 #
 # Expected results in the labels are hand-verified ground truth -- the same numbers come out
 # of SQL over the same Delta tables (mart.dim_*, mart.fct_region, mart.fct_summary,
@@ -14,7 +14,7 @@ import requests
 from duckrun.auth import get_fabric_token
 
 WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
-ONTOLOGY  = "aemo_nem_v5"
+ONTOLOGY  = "aemo_nem"
 API       = "https://api.fabric.microsoft.com/v1"
 
 QUERIES = [

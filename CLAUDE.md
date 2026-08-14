@@ -308,6 +308,17 @@ virtualization.
   What DOES work reliably is making the failure visible: because the instructions force a row
   count alongside every measure, a wrong answer announces itself as "78,146 intervals" instead
   of arriving as a plausible number. Keep that rule.
+- **Ontology, GraphModel and DataAgent do NOT appear in `GET /workspaces/{ws}/items`.**
+  The unfiltered list omits them entirely; `items?type=Ontology` does return them, as do
+  their own `/ontologies`, `/GraphModels`, `/dataAgents` collections. Don't conclude an
+  ontology is missing because the item list looks short.
+- **`folderId` on create works for the ontology and the data agent; the graph model
+  inherits.** Both create calls accept `"folderId"` in the body (and `POST
+  /items/{id}/move` with `{"targetFolderId": …}` fixes an item created earlier in the wrong
+  place). The graph model is a **child** of the ontology — moving it alone fails with
+  `CannotMoveChildOnly: "The child item cannot be moved without its parent item"` — so
+  placing the ontology places the graph automatically. Verified: all three land in `aemo`
+  with only the ontology and agent asking for it.
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).

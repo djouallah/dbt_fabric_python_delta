@@ -1,4 +1,4 @@
-# N-1 contingency on the NEM interconnector network, from the graph.
+﻿# N-1 contingency on the NEM interconnector network, from the graph.
 #
 # For each in-service interconnector: remove it, compute what can still reach NSW1, and
 # report the regions left stranded -- plus what is actually at stake there.
@@ -22,7 +22,7 @@ import requests
 from duckrun.auth import get_fabric_token
 
 WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
-ONTOLOGY  = "aemo_nem_v5"
+ONTOLOGY  = "aemo_nem"
 API       = "https://api.fabric.microsoft.com/v1"
 ROOT      = "NSW1"   # reference region: whatever cannot reach it is stranded
 

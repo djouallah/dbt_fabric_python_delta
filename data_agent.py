@@ -1,4 +1,4 @@
-# aemo_nem_agent: a Fabric Data Agent grounded on the aemo_nem_v5 Ontology.
+# aemo_nem_agent: a Fabric Data Agent grounded on the aemo_nem Ontology.
 #
 # The goal is ACCURACY for real users, so the agent gets every instruction it needs.
 # Ontology data sources accept no fewshots.json and no data-source instructions -- unlike
@@ -25,8 +25,9 @@ from duckrun.auth import get_fabric_token
 
 WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
 LAKEHOUSE = "data"
-ONTOLOGY  = "aemo_nem_v5"
+ONTOLOGY  = "aemo_nem"
 AGENT     = "aemo_nem_agent"
+FOLDER    = "aemo"   # workspace folder the agent lives in
 API       = "https://api.fabric.microsoft.com/v1"
 
 # The documented datasource type enum is lakehouse_tables | lakehouse | data_warehouse |
@@ -40,7 +41,7 @@ DS_TYPE = "ontology"
 
 INSTRUCTIONS = """
 You answer questions about the Australian National Electricity Market (NEM) using the
-aemo_nem_v5 ontology. Always answer from the ontology by generating GQL. Never guess a
+aemo_nem ontology. Always answer from the ontology by generating GQL. Never guess a
 number you did not retrieve.
 
 ## Support group by in GQL
@@ -482,13 +483,23 @@ if existing:
          json={"definition": {"parts": parts}})
     print(f"Updated data agent '{AGENT}' ({agent_id})")
 else:
+    folder_id = next((f["id"] for f in
+                      call("GET", f"{API}/workspaces/{WORKSPACE}/folders").json()["value"]
+                      if f["displayName"] == FOLDER), None)
     created = call("POST", f"{API}/workspaces/{WORKSPACE}/dataAgents", json={
         "displayName": AGENT,
-        "description": "NEM question answering grounded on the aemo_nem_v4 ontology",
+        "description": f"NEM question answering grounded on the {ONTOLOGY} ontology",
+        "folderId": folder_id,
         "definition": {"parts": parts},
     }).json()
     agent_id = created.get("id") or find_agent(AGENT)["id"]
     print(f"Created data agent '{AGENT}' ({agent_id})")
+    # folderId on create is not honoured by every preview item type, so assert placement.
+    if folder_id:
+        moved = session.post(f"{API}/workspaces/{WORKSPACE}/items/{agent_id}/move",
+                             json={"targetFolderId": folder_id})
+        print(f"  agent -> folder '{FOLDER}'" if moved.ok
+              else f"  agent move -> {moved.status_code}: {moved.text[:160]}")
 
 # Publishing is what makes the MCP endpoint work. Without it ask.py cannot connect.
 call("POST", f"{API}/workspaces/{WORKSPACE}/dataAgents/{agent_id}/staging/publish",

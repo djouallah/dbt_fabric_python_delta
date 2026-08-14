@@ -1,4 +1,4 @@
-# aemo_nem_v5: the first ontology built on the WIDE mart layer.
+# aemo_nem: the ontology, built on the WIDE mart layer.
 #
 # v4 proved a leaf-grain fact table works in the graph (11.28M Observation nodes, exact
 # counts, ~5 min load). What it could not do was answer a regional question honestly:
@@ -45,7 +45,8 @@ from duckrun.auth import get_fabric_token
 WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
 LAKEHOUSE = "data"
 SCHEMA    = "mart"
-ONTOLOGY  = "aemo_nem_v5"
+ONTOLOGY  = "aemo_nem"
+FOLDER    = "aemo"   # workspace folder the ontology and its graph live in
 API       = "https://api.fabric.microsoft.com/v1"
 
 # propertyName: (sourceColumn, valueType). "keys" is a list (composite keys allowed).
@@ -290,28 +291,59 @@ def call(method, url, **kwargs):
     return resp
 
 
+folder_id = next((f["id"] for f in
+                  call("GET", f"{API}/workspaces/{WORKSPACE}/folders").json()["value"]
+                  if f["displayName"] == FOLDER), None)
+
+
+def place(item_id, label):
+    """Move an item into FOLDER if it isn't already there.
+
+    `folderId` on create only works for items we create ourselves; the graph model is
+    created by Fabric alongside the ontology and lands wherever Fabric puts it. An existing
+    item updated in place also keeps its old location. So placement is asserted separately
+    rather than assumed."""
+    if not folder_id:
+        return
+    resp = session.post(f"{API}/workspaces/{WORKSPACE}/items/{item_id}/move",
+                        json={"targetFolderId": folder_id})
+    print(f"  {label} -> folder '{FOLDER}'"
+          if resp.ok else f"  {label} move -> {resp.status_code}: {resp.text[:160]}")
+
+
 existing = next((o for o in call("GET", f"{API}/workspaces/{WORKSPACE}/ontologies").json()["value"]
                  if o["displayName"] == ONTOLOGY), None)
 
 if existing:
     call("POST", f"{API}/workspaces/{WORKSPACE}/ontologies/{existing['id']}/updateDefinition"
                  "?updateMetadata=true", json={"definition": {"parts": parts}})
-    print(f"Updated ontology '{ONTOLOGY}' ({existing['id']})")
+    ontology_id = existing["id"]
+    print(f"Updated ontology '{ONTOLOGY}' ({ontology_id})")
 else:
     created = call("POST", f"{API}/workspaces/{WORKSPACE}/ontologies", json={
         "displayName": ONTOLOGY,
-        "description": "NEM ontology v5: unit observations plus regional demand/price and "
+        "description": "NEM ontology: unit observations plus regional demand/price and "
                        "interconnector flows, on the wide mart layer",
+        "folderId": folder_id,
         "definition": {"parts": parts},
     })
-    print(f"Created ontology '{ONTOLOGY}' ({created.json().get('id', '')})")
+    ontology_id = created.json().get("id") or next(
+        o["id"] for o in call("GET", f"{API}/workspaces/{WORKSPACE}/ontologies").json()["value"]
+        if o["displayName"] == ONTOLOGY)
+    print(f"Created ontology '{ONTOLOGY}' ({ontology_id})")
+
+place(ontology_id, "ontology")
 
 print(f"{len(ENTITIES)} entity types, {len(RELATIONSHIPS)} relationship types, {len(parts)} parts")
 
 # A schema change re-ingests automatically, but changed DATA in the bound tables does not.
 # Trigger a refresh explicitly so a redeploy after `dbt run` is never serving stale rows.
+# The graph model is created by Fabric, named "<ontology>_graph_<guid>". It is a CHILD of the
+# ontology and inherits its folder -- moving it on its own is rejected with
+# CannotMoveChildOnly, "The child item cannot be moved without its parent item". So placing
+# the ontology places the graph too; do not try to move it separately.
 graph = next(m for m in call("GET", f"{API}/workspaces/{WORKSPACE}/GraphModels").json()["value"]
-             if ONTOLOGY in m["displayName"])
+             if m["displayName"].startswith(f"{ONTOLOGY}_graph"))
 session.post(f"{API}/workspaces/{WORKSPACE}/items/{graph['id']}/jobs/instances"
              "?jobType=RefreshGraph").raise_for_status()
 print(f"Refresh triggered on {graph['displayName']} "
