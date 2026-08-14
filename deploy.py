@@ -1,4 +1,6 @@
 import os
+import runpy
+
 import duckrun
 
 WORKSPACE      = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
@@ -20,4 +22,16 @@ ws.deploy("fabric_items", lakehouse=LAKEHOUSE, folder=FOLDER, overwrite=True, va
     "workspace_id":   ws.id,
 })
 ws.schedule("run_pipeline", every=SCHEDULE_EVERY)
+
+# The ontology and the data agent are Fabric items like any other -- they just live outside
+# fabric_items/ because duckrun's folder deploy only knows VariableLibrary, Notebook,
+# SemanticModel and DataPipeline, and raises "unsupported item type" on anything else. So
+# they are pushed by their own scripts here, in the same deploy step as everything else,
+# rather than from a laptop. Order matters: the agent binds the ontology by displayName.
+#
+# run_path rather than import: both are flat scripts that do their work at module level,
+# the same shape as this file.
+runpy.run_path("ontology.py", run_name="__main__")
+runpy.run_path("data_agent.py", run_name="__main__")
+
 print("=== Deploy complete ===")

@@ -24,6 +24,15 @@ Variable Library → Notebook → Semantic Model → Data Pipeline — and retur
 - **`ws.schedule(name, every="720m")`** is idempotent — it updates the existing schedule rather
   than stacking duplicates. No list/dedup logic.
 
+**The ontology and data agent deploy from `deploy.py` too, just not from `fabric_items/`.**
+duckrun's folder deploy only knows `VariableLibrary`, `Notebook`, `SemanticModel` and
+`DataPipeline` and raises `unsupported item type` on anything else, so an `.Ontology` folder
+dropped into `fabric_items/` would break the whole deploy. Instead `deploy.py` ends with
+`runpy.run_path("ontology.py")` then `runpy.run_path("data_agent.py")` — same step, same
+`deploy=full` gate, same `aemo` folder as everything else. Order matters: the agent binds the
+ontology by displayName, so the ontology has to exist first. Nothing about them runs locally
+or on a plain push.
+
 ## Auth: OIDC only, no az login and no token step
 
 duckrun mints every token it needs (OneLake storage, Fabric control plane, Power BI) by
@@ -298,10 +307,9 @@ virtualization.
   -count sanity table; and finally **injecting the latest date into `aiInstructions` at
   deploy time** (`data_agent.py` queries `max(date) FROM mart.fct_region` and substitutes
   `__LATEST_DATE__`/`__WEEK_START__`) so no probe step is needed at all. **That constant
-  goes stale on every dbt run**, which is why CI Phase 6 republishes the agent on every run
-  and is deliberately NOT gated on the `deploy` input — it drifted two days within hours of
-  first deploying it. The step is non-fatal: these are preview APIs and a flaky publish must
-  not fail a pipeline whose real job is the dbt build. That last one helped
+  goes stale as soon as dbt runs again** — it drifted two days within hours — so a relative
+  -date answer is only as current as the last `deploy=full`. Re-deploy to refresh it, and
+  prefer explicit dates for anything that matters. That last one helped
   — SA1 spare capacity then came back exact at 2,042 MW over 1,777 intervals — but QLD1
   demand still fails intermittently on the same question shape. **Treat it as non-determinism
   and use explicit dates for anything that matters.**
