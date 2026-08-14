@@ -297,7 +297,11 @@ virtualization.
   Mitigations tried, in order: a forceful "anchoring is only half the job" rule; an interval
   -count sanity table; and finally **injecting the latest date into `aiInstructions` at
   deploy time** (`data_agent.py` queries `max(date) FROM mart.fct_region` and substitutes
-  `__LATEST_DATE__`/`__WEEK_START__`) so no probe step is needed at all. That last one helped
+  `__LATEST_DATE__`/`__WEEK_START__`) so no probe step is needed at all. **That constant
+  goes stale on every dbt run**, which is why CI Phase 6 republishes the agent on every run
+  and is deliberately NOT gated on the `deploy` input — it drifted two days within hours of
+  first deploying it. The step is non-fatal: these are preview APIs and a flaky publish must
+  not fail a pipeline whose real job is the dbt build. That last one helped
   — SA1 spare capacity then came back exact at 2,042 MW over 1,777 intervals — but QLD1
   demand still fails intermittently on the same question shape. **Treat it as non-determinism
   and use explicit dates for anything that matters.**

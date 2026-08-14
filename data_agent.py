@@ -443,8 +443,13 @@ if "--dump" in sys.argv:
         print(base64.b64decode(p["payload"]).decode())
     raise SystemExit(0)
 
-ontology = next(o for o in call("GET", f"{API}/workspaces/{WORKSPACE}/ontologies").json()["value"]
-                if o["displayName"] == ONTOLOGY)
+ontologies = call("GET", f"{API}/workspaces/{WORKSPACE}/ontologies").json()["value"]
+ontology = next((o for o in ontologies if o["displayName"] == ONTOLOGY), None)
+if not ontology:
+    # Explicit rather than a bare StopIteration: this runs unattended in CI, where the
+    # useful signal is "run ontology.py first", not a traceback.
+    raise SystemExit(f"No ontology named '{ONTOLOGY}' in the workspace — run ontology.py "
+                     f"first. Found: {[o['displayName'] for o in ontologies] or 'none'}")
 
 parts = [
     part("Files/Config/data_agent.json", {"$schema": "2.1.0"}),

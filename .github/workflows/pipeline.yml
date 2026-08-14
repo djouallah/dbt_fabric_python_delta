@@ -150,6 +150,28 @@ jobs:
           fi
           echo "T_DEPLOY=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
+      - name: 🤖 Phase 6 — Republish the Data Agent
+        run: |
+          T0=$(date +%s)
+          # NOT gated on the `deploy` input, unlike Phase 5, and that is deliberate.
+          # data_agent.py bakes the data's own latest date into the agent's aiInstructions
+          # (it queries max(date) FROM mart.fct_region). The agent cannot reliably resolve a
+          # relative date on its own — handed "last week" it drops the DateKey predicate and
+          # averages the whole history — so that injected constant is the only thing making
+          # "last week" mean the right seven days. Every dbt run moves the date, so the agent
+          # has to be republished every run or it silently answers about the wrong window.
+          #
+          # Non-fatal on purpose: the Data Agent and Ontology APIs are preview, and a flaky
+          # publish must not fail a pipeline whose real job is the dbt build. A warning is
+          # visible in the run summary; the previous published agent keeps serving.
+          if python data_agent.py; then
+            echo "AGENT_OK=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Data Agent republish failed — the previously published agent keeps serving, but its injected 'latest date' is now stale. Re-run this workflow, or run data_agent.py locally."
+            echo "AGENT_OK=false" >> "$GITHUB_ENV"
+          fi
+          echo "T_AGENT=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
+
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -177,6 +199,7 @@ jobs:
               ('✅', 'dbt test',            env('T_DBT_TEST',  '0')),
               ('📚', 'dbt docs',            env('T_DBT_DOCS',  '0')),
               ('🚀', 'Deploy Fabric',       env('T_DEPLOY',    '0')),
+              ('🤖', 'Data Agent',          env('T_AGENT',     '0')),
           ]
           total = sum(int(p[2] or 0) for p in phases)
 
@@ -327,7 +350,8 @@ jobs:
           print("  B --> C[✅ dbt test]")
           print("  C --> D[📚 dbt docs]")
           print("  D --> E[🚀 Deploy Fabric]")
-          print("  E --> F[🌐 Publish docs]")
+          print("  E --> F[🤖 Data Agent]")
+          print("  F --> G[🌐 Publish docs]")
           print("```")
           print()
           print("---")
