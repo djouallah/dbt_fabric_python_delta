@@ -65,7 +65,7 @@ models:
   - name: fct_summary
     description: Combined SCADA and price summary
     columns:
-      - name: date
+      - name: DateKey
         tests:
           - not_null:
               config:
@@ -104,7 +104,7 @@ models:
       net interchange, available generation. NetInterchange is POSITIVE when the region
       is a net exporter.
     columns:
-      - name: date
+      - name: DateKey
         tests:
           - not_null
       - name: RegionID
@@ -130,7 +130,7 @@ models:
       keeps rows where the unit was NOT dispatched, because AvailableMW on an undispatched
       unit is what makes real headroom computable.
     columns:
-      - name: date
+      - name: DateKey
         tests:
           - not_null:
               config:
@@ -157,7 +157,7 @@ models:
       Intraday only - the daily archive carries no interconnector data, so this table has
       no back-history and accumulates forward.
     columns:
-      - name: date
+      - name: DateKey
         tests:
           - not_null
       - name: InterconnectorID
@@ -175,7 +175,7 @@ models:
       only while the NEM is a tree - retire this in favour of fct_interconnector once
       EnergyConnect (PEC) commissions and closes the SA1-NSW1 cycle.
     columns:
-      - name: date
+      - name: DateKey
         tests:
           - not_null
       - name: LinkID
@@ -194,7 +194,7 @@ models:
       Network constraints that actually bound (nonzero marginal value) or were violated,
       from the DISPATCHIS CONSTRAINT record. Intraday only, no back-history.
     columns:
-      - name: date
+      - name: DateKey
         tests:
           - not_null
       - name: ConstraintID

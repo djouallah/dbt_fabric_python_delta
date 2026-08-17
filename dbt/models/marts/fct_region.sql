@@ -49,7 +49,6 @@ WITH region_dispatch AS (
 )
 
 SELECT
-  date,
   TimeHHMM,
   RegionID,
   -- ISO date as a string: ontology entity KEY parts may only be String/Integer, so any

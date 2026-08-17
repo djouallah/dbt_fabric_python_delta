@@ -52,7 +52,6 @@ WITH unit_dispatch AS (
 )
 
 SELECT
-  date,
   TimeHHMM,
   DUID,
   RegionID,

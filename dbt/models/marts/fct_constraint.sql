@@ -19,7 +19,6 @@
 ) }}
 
 SELECT
-  c.DATE AS date,
   CAST(strftime(c.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
   c.CONSTRAINTID AS ConstraintID,
   CAST(strftime(c.DATE, '%Y%m%d') AS INT) AS DateKey,

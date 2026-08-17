@@ -9,6 +9,6 @@ SELECT
 FROM (
   SELECT
     (SELECT COUNT(DISTINCT DATE) FROM {{ ref('fct_scada') }} WHERE INTERVENTION = 0) as scada_days,
-    (SELECT COUNT(DISTINCT date) FROM {{ ref('fct_summary') }}) as summary_days
+    (SELECT COUNT(DISTINCT DateKey) FROM {{ ref('fct_summary') }}) as summary_days
 )
 WHERE scada_days > summary_days

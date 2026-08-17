@@ -50,7 +50,6 @@ WITH daily_summary AS (
 )
 
 SELECT
-  date,
   -- HHMM, not minutes past midnight: 0, 5, ... 1255, 1300, ... 2355. 288 distinct values.
   TimeHHMM,
   DUID,
@@ -66,4 +65,4 @@ SELECT
   -- and sorts identically. `date` stays a real DATE for Power BI's calendar join.
   CAST(strftime(date, '%Y%m%d') AS INT) AS DateKey
 FROM daily_summary
-ORDER BY date
+ORDER BY DateKey

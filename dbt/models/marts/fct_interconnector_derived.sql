@@ -39,7 +39,7 @@
 
 WITH ni AS (
   SELECT
-    date,
+    DateKey,
     TimeHHMM,
     month_key,
     MAX(CASE WHEN RegionID = 'NSW1' THEN NetInterchange END) AS nsw,
@@ -53,30 +53,29 @@ WITH ni AS (
 ),
 
 solved AS (
-  SELECT date, TimeHHMM, month_key,
+  SELECT DateKey, TimeHHMM, month_key,
          nsw + qld + sa + tas + vic AS residual,
          'QLD1-NSW1' AS LinkID, 'QLD1' AS FromRegionID, 'NSW1' AS ToRegionID,
          'QNI + Terranora' AS LinkName, -qld AS FlowMW
   FROM ni
   UNION ALL
-  SELECT date, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
+  SELECT DateKey, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
          'VIC1-NSW1', 'VIC1', 'NSW1', 'VNI', vic + sa + tas
   FROM ni
   UNION ALL
-  SELECT date, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
+  SELECT DateKey, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
          'SA1-VIC1', 'SA1', 'VIC1', 'Heywood + Murraylink', -sa
   FROM ni
   UNION ALL
-  SELECT date, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
+  SELECT DateKey, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
          'TAS1-VIC1', 'TAS1', 'VIC1', 'Basslink', -tas
   FROM ni
 )
 
 SELECT
-  date,
   TimeHHMM,
   LinkID,
-  CAST(strftime(date, '%Y%m%d') AS INT) AS DateKey,
+  DateKey,
   FromRegionID,
   ToRegionID,
   LinkName,

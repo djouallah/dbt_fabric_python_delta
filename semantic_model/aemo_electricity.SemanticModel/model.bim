@@ -35,6 +35,14 @@
         "sourceLineageTag": "[aemo].[dim_calendar]",
         "columns": [
           {
+            "name": "DateKey",
+            "dataType": "int64",
+            "description": "YYYYMMDD integer date key — what every fact joins on",
+            "sourceColumn": "DateKey",
+            "sourceLineageTag": "DateKey",
+            "summarizeBy": "none"
+          },
+          {
             "name": "date",
             "dataType": "dateTime",
             "description": "Calendar date (primary key). Grain: one row per day.",
@@ -156,15 +164,6 @@
         "sourceLineageTag": "[aemo].[fct_summary]",
         "columns": [
           {
-            "name": "date",
-            "dataType": "dateTime",
-            "description": "Dispatch date",
-            "formatString": "yyyy-MM-dd",
-            "sourceColumn": "date",
-            "sourceLineageTag": "date",
-            "summarizeBy": "none"
-          },
-          {
             "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
@@ -235,7 +234,7 @@
           {
             "name": "Latest Update",
             "description": "Most recent date present in the data, ignoring all filters",
-            "expression": "CALCULATE(MAX(fct_summary[date]), REMOVEFILTERS())",
+            "expression": "VAR k = CALCULATE(MAX(fct_summary[DateKey]), REMOVEFILTERS()) RETURN DATE(INT(k/10000), MOD(INT(k/100), 100), MOD(k, 100))",
             "formatString": "yyyy-MM-dd"
           }
         ],
@@ -301,15 +300,6 @@
         "description": "Regional dispatch outcome from AEMO's DREGION record.\nGrain: one row per 5-minute dispatch interval per region.\nCarries demand, net interchange and available generation — none of which were exposed before.",
         "sourceLineageTag": "[aemo].[fct_region]",
         "columns": [
-          {
-            "name": "date",
-            "dataType": "dateTime",
-            "description": "Dispatch date",
-            "formatString": "yyyy-MM-dd",
-            "sourceColumn": "date",
-            "sourceLineageTag": "date",
-            "summarizeBy": "none"
-          },
           {
             "name": "TimeHHMM",
             "dataType": "int64",
@@ -429,15 +419,6 @@
         "sourceLineageTag": "[aemo].[fct_interconnector_derived]",
         "columns": [
           {
-            "name": "date",
-            "dataType": "dateTime",
-            "description": "Dispatch date",
-            "formatString": "yyyy-MM-dd",
-            "sourceColumn": "date",
-            "sourceLineageTag": "date",
-            "summarizeBy": "none"
-          },
-          {
             "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
@@ -548,9 +529,9 @@
       {
         "name": "fct_summary_to_dim_calendar",
         "fromTable": "fct_summary",
-        "fromColumn": "date",
+        "fromColumn": "DateKey",
         "toTable": "dim_calendar",
-        "toColumn": "date",
+        "toColumn": "DateKey",
         "relyOnReferentialIntegrity": true
       },
       {
@@ -572,17 +553,17 @@
       {
         "name": "fct_region_to_dim_calendar",
         "fromTable": "fct_region",
-        "fromColumn": "date",
+        "fromColumn": "DateKey",
         "toTable": "dim_calendar",
-        "toColumn": "date",
+        "toColumn": "DateKey",
         "relyOnReferentialIntegrity": true
       },
       {
         "name": "fct_interconnector_derived_to_dim_calendar",
         "fromTable": "fct_interconnector_derived",
-        "fromColumn": "date",
+        "fromColumn": "DateKey",
         "toTable": "dim_calendar",
-        "toColumn": "date",
+        "toColumn": "DateKey",
         "relyOnReferentialIntegrity": true
       }
     ]

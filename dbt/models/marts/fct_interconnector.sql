@@ -37,7 +37,6 @@ WITH flows AS (
 )
 
 SELECT
-  f.date,
   f.TimeHHMM,
   f.InterconnectorID,
   CAST(strftime(f.date, '%Y%m%d') AS INT) AS DateKey,
