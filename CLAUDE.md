@@ -409,6 +409,34 @@ incantation. `deploy.py` deliberately does NOT run the notebook: CI's own dbt ru
 wrote the Delta tables to the same lakehouse, so it would be redundant. The notebook is
 exercised by the scheduled pipeline.
 
+## The ontology model is `ontology.yaml`; `ontology.py` only deploys it
+
+Entities, properties, bindings and relationships are **data** and live in `ontology.yaml`.
+`ontology.py` loads it, hashes the parts, and pushes them — nothing about the ontology's shape
+is decided in the Python any more. Adding an entity is a YAML edit.
+
+- **Every id is derived from a NAME by hashing**, so a rename is not a rename. `big_id("entity",
+  name)` / `big_id("prop", entity, prop)` / `big_id("rel", name)` mean a renamed thing mints a
+  new type and **orphans the old one** — the deploy adds rather than updates, and the stale type
+  has to be deleted in the portal. Changing a `table:` or a source column is safe; changing a
+  name on the left-hand side is not.
+- **`python ontology.py --check`** builds the parts and diffs them against whatever
+  `download.py` last fetched into `fabric_download/aemo_nem.Ontology/`, then exits — no token,
+  no deploy, exit 1 if anything differs. This is how you confirm a YAML edit does what you meant
+  *before* shipping it. An `ADDED`+`REMOVED` pair with no `CHANGED` is the signature of an
+  accidental rename (verified: renaming `Flow` → `PowerFlow` reports 2 added, 2 removed, 0
+  changed).
+- **`--check` compares only the keys we SEND, not equality.** Fabric enriches what it stores:
+  every part gains a `$schema`, `.platform` gains a `config`/`logicalId`, and entity definitions
+  gain `untypedProperties`. A plain `==` reports all 40 parts as changed on an untouched model.
+  `sends_same()` walks our side only and ignores extra keys.
+- Properties are `Name: [sourceColumn, valueType]` — a 2-list unpacks exactly like the tuples it
+  replaced, so the parts-assembly code was unchanged by the move.
+- **`pyyaml` is named explicitly in the workflow's pip install.** It already arrived via
+  `duckrun → dbt-core`, but a transitive dependency shouldn't be load-bearing.
+- The environment (workspace, lakehouse, schema, folder) stays as constants in `ontology.py`;
+  only the model moved. The ontology's own `name` and `description` come from the YAML.
+
 ## Reading an item back out of Fabric — `download.py`
 
 `python download.py` writes a deployed item's definition to the **gitignored** `fabric_download/`

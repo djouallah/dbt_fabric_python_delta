@@ -1,0 +1,215 @@
+# aemo_nem — the ontology MODEL. Deploy logic lives in ontology.py; this file is data only.
+#
+# Every id Fabric sees is DERIVED FROM THE NAMES BELOW by hashing (see big_id/guid in
+# ontology.py), so a rename is not a rename — it mints a new entity/relationship/property and
+# leaves the old one behind. Renaming anything here means the old type has to be deleted in the
+# portal, or the ontology accumulates orphans. Changing a `table:` or a source column is safe;
+# changing a key on the left-hand side is not.
+#
+# Property syntax:  PropertyName: [sourceColumn, valueType]
+#   valueType is one of String | Boolean | BigInt | Double (Fabric's own enum).
+#   Bind measures as Double, NEVER a parameterised DECIMAL(p,s) — Fabric maps that to String
+#   and the column ingests as all NULL, silently. Every mart casts its measures to DOUBLE.
+#
+# `keys` is a list (composite keys are supported and used). Key parts may only be String or
+# Integer, which is why dates appear as the ISO string DateKey rather than a date type.
+# `display` defaults to the first key.
+#
+# TWO NAMES ARE DELIBERATE WORKAROUNDS for GQL reserved words: GeneratingUnit (was `Unit`) and
+# TimeHHMM (was `Interval`). A bare (u:Unit) is a *syntax* error, which reads like a broken
+# binding rather than a name clash. TimeHHMM also stops the name lying — the column is HHMM.
+#
+# NOT bound, deliberately: fct_unit_dispatch (26.8M rows — would triple the load for
+# offered-capacity detail better served by SQL) and fct_constraint (intraday-only, tiny, and
+# constraint IDs are opaque strings a graph adds nothing to).
+
+name: aemo_nem
+description: >-
+  NEM ontology: unit observations plus regional demand/price and interconnector flows,
+  on the wide mart layer
+
+entities:
+
+  Region:
+    table: dim_region
+    keys: [RegionID]
+    properties:
+      RegionID: [RegionID, String]
+      State:    [State,    String]
+      Market:   [Market,   String]
+
+  Interconnector:
+    table: dim_interconnector
+    keys: [InterconnectorID]
+    # No row filter at bind time, so EnergyConnect (InService = false) is a node like any
+    # other. Filter on InService in any reachability question.
+    properties:
+      InterconnectorID: [InterconnectorID, String]
+      Name:             [Name,             String]
+      AcDc:             [AcDc,             String]
+      InService:        [InService,        Boolean]
+
+  Participant:
+    table: dim_participant
+    keys: [Participant]
+    properties:
+      Participant:             [Participant,             String]
+      ParentParticipant:       [ParentParticipant,       String]
+      IsCurated:               [IsCurated,               Boolean]
+      IsRegisteredParticipant: [IsRegisteredParticipant, Boolean]
+
+  Station:
+    table: dim_station
+    keys: [StationName]
+    properties:
+      StationName:            [StationName,            String]
+      Region:                 [Region,                 String]
+      UnitCount:              [UnitCount,              BigInt]
+      GeneratingUnitCount:    [GeneratingUnitCount,    BigInt]
+      LoadUnitCount:          [LoadUnitCount,          BigInt]
+      BidirectionalUnitCount: [BidirectionalUnitCount, BigInt]
+      RegCapMW:               [RegCapMW,               Double]
+
+  # Renamed from v4's `Unit`, which is a GQL reserved word.
+  GeneratingUnit:
+    table: dim_duid
+    keys: [DUID]
+    properties:
+      DUID:         [DUID,                 String]
+      Region:       [Region,               String]
+      FuelSource:   [FuelSourceDescriptor, String]
+      DispatchType: [DispatchType,         String]
+      Technology:   [TechnologyType,       String]
+      RegCapMW:     [RegCapMW,             Double]
+      StationName:  [StationName,          String]
+
+  # One node per fct_summary row: unit output and the regional price it faced.
+  Observation:
+    table: fct_summary
+    keys: [DUID, DateKey, TimeHHMM]
+    display: DUID
+    properties:
+      DUID:     [DUID,     String]
+      DateKey:  [DateKey,  String]
+      TimeHHMM: [time,     BigInt]
+      RegionID: [RegionID, String]
+      MW:       [mw,       Double]
+      Price:    [price,    Double]
+
+  # NEW in v5. The regional truth: one row per region per interval. Price here is THE
+  # regional spot price -- one value, not the same number copied onto 60 units.
+  RegionInterval:
+    table: fct_region
+    keys: [RegionID, DateKey, TimeHHMM]
+    display: RegionID
+    properties:
+      RegionID:               [RegionID,               String]
+      DateKey:                [DateKey,                String]
+      TimeHHMM:               [time,                   BigInt]
+      Price:                  [price,                  Double]
+      TotalDemand:            [TotalDemand,            Double]
+      NetInterchange:         [NetInterchange,         Double]
+      AvailableGeneration:    [AvailableGeneration,    Double]
+      DispatchableGeneration: [DispatchableGeneration, Double]
+
+  # NEW in v5. Power moving between regions, full history. Region-PAIR grain: QNI and
+  # Terranora share the QLD1-NSW1 corridor and cannot be separated from net injections.
+  Flow:
+    table: fct_interconnector_derived
+    keys: [LinkID, DateKey, TimeHHMM]
+    display: LinkID
+    properties:
+      LinkID:        [LinkID,        String]
+      DateKey:       [DateKey,       String]
+      TimeHHMM:      [time,          BigInt]
+      LinkName:      [LinkName,      String]
+      FromRegion:    [FromRegion,    String]
+      ToRegion:      [ToRegion,      String]
+      FlowMW:        [FlowMW,        Double]
+      NetworkLossMW: [NetworkLossMW, Double]
+
+# Each relationship binds through `table`: the columns in `from_bind` / `to_bind` are
+# [sourceColumn, targetProperty] pairs identifying each end's entity in that table. A
+# multi-column pair list is how a composite-key entity is referenced.
+relationships:
+
+  - name: SUBSIDIARY_OF          # child -> parent company
+    from: Participant
+    to: Participant
+    table: dim_participant_parent
+    from_bind: [[Participant,       Participant]]
+    to_bind:   [[ParentParticipant, Participant]]
+
+  - name: OPERATED_BY
+    from: GeneratingUnit
+    to: Participant
+    table: dim_duid
+    from_bind: [[DUID,        DUID]]
+    to_bind:   [[Participant, Participant]]
+
+  - name: PART_OF
+    from: GeneratingUnit
+    to: Station
+    table: dim_duid
+    from_bind: [[DUID,        DUID]]
+    to_bind:   [[StationName, StationName]]
+
+  - name: OWNED_BY
+    from: Station
+    to: Participant
+    table: dim_station
+    from_bind: [[StationName, StationName]]
+    to_bind:   [[Participant, Participant]]
+
+  - name: LOCATED_IN
+    from: Station
+    to: Region
+    table: dim_station
+    from_bind: [[StationName, StationName]]
+    to_bind:   [[Region,      RegionID]]
+
+  # CONNECTS_FROM / CONNECTS_TO record the direction in the source data, but an interconnector
+  # physically carries power BOTH ways -- traverse them as a union, never one alone.
+  - name: CONNECTS_FROM
+    from: Interconnector
+    to: Region
+    table: dim_interconnector
+    from_bind: [[InterconnectorID, InterconnectorID]]
+    to_bind:   [[FromRegion,       RegionID]]
+
+  - name: CONNECTS_TO
+    from: Interconnector
+    to: Region
+    table: dim_interconnector
+    from_bind: [[InterconnectorID, InterconnectorID]]
+    to_bind:   [[ToRegion,         RegionID]]
+
+  - name: PRODUCED
+    from: GeneratingUnit
+    to: Observation
+    table: fct_summary
+    from_bind: [[DUID, DUID]]
+    to_bind:   [[DUID, DUID], [DateKey, DateKey], [time, TimeHHMM]]
+
+  # A region's own dispatch outcome, interval by interval.
+  - name: OBSERVED
+    from: Region
+    to: RegionInterval
+    table: fct_region
+    from_bind: [[RegionID, RegionID]]
+    to_bind:   [[RegionID, RegionID], [DateKey, DateKey], [time, TimeHHMM]]
+
+  # Both ends of each corridor flow, so reachability and transfer questions traverse.
+  - name: FLOW_FROM
+    from: Flow
+    to: Region
+    table: fct_interconnector_derived
+    from_bind: [[LinkID, LinkID], [DateKey, DateKey], [time, TimeHHMM]]
+    to_bind:   [[FromRegion, RegionID]]
+
+  - name: FLOW_TO
+    from: Flow
+    to: Region
+    table: fct_interconnector_derived
+    from_bind: [[LinkID, LinkID], [DateKey, DateKey], [time, TimeHHMM]]
+    to_bind:   [[ToRegion, RegionID]]

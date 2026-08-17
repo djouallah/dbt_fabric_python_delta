@@ -61,7 +61,9 @@ jobs:
           python-version: "3.12"
 
       - name: 📦 Install dependencies
-        run: pip install duckrun
+        # pyyaml (ontology.py reads ontology.yaml) already arrives via duckrun -> dbt-core,
+        # but naming it keeps a transitive dependency from becoming load-bearing.
+        run: pip install duckrun pyyaml
 
       - name: 🏗️  Phase 1 — Provision Lakehouse
         run: |

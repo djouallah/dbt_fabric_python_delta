@@ -1,4 +1,12 @@
-# aemo_nem: the ontology, built on the WIDE mart layer.
+# aemo_nem: DEPLOY LOGIC for the ontology. The model itself is data, and lives in
+# ontology.yaml -- entities, their properties and bindings, and the relationships between
+# them. Nothing about the shape of the ontology is decided in this file; it turns that YAML
+# into Fabric definition parts and pushes them.
+#
+# `python ontology.py --check` builds the parts and diffs them against a folder previously
+# fetched by download.py, printing what would change, without deploying anything. That is the
+# proof a YAML edit does what you meant. (argv, like data_agent.py's --dump: deploy.py runs
+# this under runpy with ITS argv, and deploy.py takes no arguments.)
 #
 # v4 proved a leaf-grain fact table works in the graph (11.28M Observation nodes, exact
 # counts, ~5 min load). What it could not do was answer a regional question honestly:
@@ -24,172 +32,41 @@
 #                                 the column is HHMM, 0..2355, not minutes past midnight)
 # Nothing in v5 needs a backtick.
 #
-# Unchanged rules that still bite: entity key parts may only be String or Integer (so dates
-# are ISO strings via DateKey), and a Double property must be bound to a DOUBLE column --
-# a parameterised DECIMAL(p,s) silently maps to String and ingests as all NULL.
-#
-# NOT bound, deliberately: fct_unit_dispatch (26.8M rows -- would triple the load for
-# offered-capacity detail better served by SQL) and fct_constraint (intraday-only, tiny,
-# and constraint IDs are opaque strings a graph adds nothing to).
+# The rules that shape ontology.yaml -- key parts are String/Integer only, measures must bind
+# as Double -- are documented there, next to the data they constrain.
 
 import base64
 import hashlib
 import json
+import os
+import sys
 import time
 import uuid
 
 import requests
 import duckrun
+import yaml
 from duckrun.auth import get_fabric_token
 
+# Environment, not model: which workspace and lakehouse the ontology is deployed against.
+# The model's own name and description come from the YAML.
 WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
 LAKEHOUSE = "data"
 SCHEMA    = "mart"
-ONTOLOGY  = "aemo_nem"
 FOLDER    = "aemo"   # workspace folder the ontology and its graph live in
 API       = "https://api.fabric.microsoft.com/v1"
+MODEL_FILE = "ontology.yaml"
+CHECK_DIR  = os.path.join("fabric_download", "aemo_nem.Ontology")   # --check compares here
 
-# propertyName: (sourceColumn, valueType). "keys" is a list (composite keys allowed).
-ENTITIES = {
-    "Region": {
-        "table": "dim_region",
-        "keys": ["RegionID"],
-        "properties": {
-            "RegionID": ("RegionID", "String"),
-            "State":    ("State",    "String"),
-            "Market":   ("Market",   "String"),
-        },
-    },
-    "Interconnector": {
-        "table": "dim_interconnector",
-        "keys": ["InterconnectorID"],
-        # No row filter at bind time, so EnergyConnect (InService = false) is a node like any
-        # other. Filter on InService in any reachability question.
-        "properties": {
-            "InterconnectorID": ("InterconnectorID", "String"),
-            "Name":             ("Name",             "String"),
-            "AcDc":             ("AcDc",             "String"),
-            "InService":        ("InService",        "Boolean"),
-        },
-    },
-    "Participant": {
-        "table": "dim_participant",
-        "keys": ["Participant"],
-        "properties": {
-            "Participant":             ("Participant",             "String"),
-            "ParentParticipant":       ("ParentParticipant",       "String"),
-            "IsCurated":               ("IsCurated",               "Boolean"),
-            "IsRegisteredParticipant": ("IsRegisteredParticipant", "Boolean"),
-        },
-    },
-    "Station": {
-        "table": "dim_station",
-        "keys": ["StationName"],
-        "properties": {
-            "StationName":            ("StationName",            "String"),
-            "Region":                 ("Region",                 "String"),
-            "UnitCount":              ("UnitCount",              "BigInt"),
-            "GeneratingUnitCount":    ("GeneratingUnitCount",    "BigInt"),
-            "LoadUnitCount":          ("LoadUnitCount",          "BigInt"),
-            "BidirectionalUnitCount": ("BidirectionalUnitCount", "BigInt"),
-            "RegCapMW":               ("RegCapMW",               "Double"),
-        },
-    },
-    # Renamed from v4's `Unit`, which is a GQL reserved word.
-    "GeneratingUnit": {
-        "table": "dim_duid",
-        "keys": ["DUID"],
-        "properties": {
-            "DUID":         ("DUID",                 "String"),
-            "Region":       ("Region",               "String"),
-            "FuelSource":   ("FuelSourceDescriptor", "String"),
-            "DispatchType": ("DispatchType",         "String"),
-            "Technology":   ("TechnologyType",       "String"),
-            "RegCapMW":     ("RegCapMW",             "Double"),
-            "StationName":  ("StationName",          "String"),
-        },
-    },
-    # One node per fct_summary row: unit output and the regional price it faced.
-    "Observation": {
-        "table": "fct_summary",
-        "keys": ["DUID", "DateKey", "TimeHHMM"],
-        "display": "DUID",
-        "properties": {
-            "DUID":     ("DUID",     "String"),
-            "DateKey":  ("DateKey",  "String"),
-            "TimeHHMM": ("time",     "BigInt"),
-            "RegionID": ("RegionID", "String"),
-            "MW":       ("mw",       "Double"),
-            "Price":    ("price",    "Double"),
-        },
-    },
-    # NEW in v5. The regional truth: one row per region per interval. Price here is THE
-    # regional spot price -- one value, not the same number copied onto 60 units.
-    "RegionInterval": {
-        "table": "fct_region",
-        "keys": ["RegionID", "DateKey", "TimeHHMM"],
-        "display": "RegionID",
-        "properties": {
-            "RegionID":               ("RegionID",               "String"),
-            "DateKey":                ("DateKey",                "String"),
-            "TimeHHMM":               ("time",                   "BigInt"),
-            "Price":                  ("price",                  "Double"),
-            "TotalDemand":            ("TotalDemand",            "Double"),
-            "NetInterchange":         ("NetInterchange",         "Double"),
-            "AvailableGeneration":    ("AvailableGeneration",    "Double"),
-            "DispatchableGeneration": ("DispatchableGeneration", "Double"),
-        },
-    },
-    # NEW in v5. Power moving between regions, full history. Region-PAIR grain: QNI and
-    # Terranora share the QLD1-NSW1 corridor and cannot be separated from net injections.
-    "Flow": {
-        "table": "fct_interconnector_derived",
-        "keys": ["LinkID", "DateKey", "TimeHHMM"],
-        "display": "LinkID",
-        "properties": {
-            "LinkID":        ("LinkID",        "String"),
-            "DateKey":       ("DateKey",       "String"),
-            "TimeHHMM":      ("time",          "BigInt"),
-            "LinkName":      ("LinkName",      "String"),
-            "FromRegion":    ("FromRegion",    "String"),
-            "ToRegion":      ("ToRegion",      "String"),
-            "FlowMW":        ("FlowMW",        "Double"),
-            "NetworkLossMW": ("NetworkLossMW", "Double"),
-        },
-    },
-}
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+with open(MODEL_FILE, encoding="utf-8") as f:
+    MODEL = yaml.safe_load(f)
 
-# (name, source entity, target entity, mapping table, source bindings, target bindings).
-RELATIONSHIPS = [
-    ("SUBSIDIARY_OF", "Participant",    "Participant", "dim_participant_parent",
-     [("Participant", "Participant")],           [("ParentParticipant", "Participant")]),
-    ("OPERATED_BY",   "GeneratingUnit", "Participant", "dim_duid",
-     [("DUID", "DUID")],                         [("Participant", "Participant")]),
-    ("PART_OF",       "GeneratingUnit", "Station",     "dim_duid",
-     [("DUID", "DUID")],                         [("StationName", "StationName")]),
-    ("OWNED_BY",      "Station",        "Participant", "dim_station",
-     [("StationName", "StationName")],           [("Participant", "Participant")]),
-    ("LOCATED_IN",    "Station",        "Region",      "dim_station",
-     [("StationName", "StationName")],           [("Region", "RegionID")]),
-    ("CONNECTS_FROM", "Interconnector", "Region",      "dim_interconnector",
-     [("InterconnectorID", "InterconnectorID")], [("FromRegion", "RegionID")]),
-    ("CONNECTS_TO",   "Interconnector", "Region",      "dim_interconnector",
-     [("InterconnectorID", "InterconnectorID")], [("ToRegion", "RegionID")]),
-    ("PRODUCED",      "GeneratingUnit", "Observation", "fct_summary",
-     [("DUID", "DUID")],
-     [("DUID", "DUID"), ("DateKey", "DateKey"), ("time", "TimeHHMM")]),
-    # NEW: a region's own dispatch outcome, interval by interval.
-    ("OBSERVED",      "Region",         "RegionInterval", "fct_region",
-     [("RegionID", "RegionID")],
-     [("RegionID", "RegionID"), ("DateKey", "DateKey"), ("time", "TimeHHMM")]),
-    # NEW: both ends of each corridor flow, so reachability and transfer questions traverse.
-    ("FLOW_FROM",     "Flow",           "Region",      "fct_interconnector_derived",
-     [("LinkID", "LinkID"), ("DateKey", "DateKey"), ("time", "TimeHHMM")],
-     [("FromRegion", "RegionID")]),
-    ("FLOW_TO",       "Flow",           "Region",      "fct_interconnector_derived",
-     [("LinkID", "LinkID"), ("DateKey", "DateKey"), ("time", "TimeHHMM")],
-     [("ToRegion", "RegionID")]),
-]
+ONTOLOGY      = MODEL["name"]
+DESCRIPTION   = MODEL["description"]
+ENTITIES      = MODEL["entities"]
+RELATIONSHIPS = MODEL["relationships"]
+
 
 
 def big_id(*parts):
@@ -250,7 +127,9 @@ for entity, spec in ENTITIES.items():
         },
     }))
 
-for name, src, tgt, table, src_bind, tgt_bind in RELATIONSHIPS:
+for rel in RELATIONSHIPS:
+    name, src, tgt, table = rel["name"], rel["from"], rel["to"], rel["table"]
+    src_bind, tgt_bind = rel["from_bind"], rel["to_bind"]
     rid = big_id("rel", name)
     parts.append(part(f"RelationshipTypes/{rid}/definition.json", {
         "id": rid,
@@ -273,6 +152,48 @@ for name, src, tgt, table, src_bind, tgt_bind in RELATIONSHIPS:
             for col, prop in tgt_bind
         ],
     }))
+
+def sends_same(built, stored):
+    """Whether everything we SEND already matches what Fabric STORED.
+
+    Not equality: the service enriches what it keeps. Every stored part gains a `$schema`,
+    `.platform` gains a `config` block with a logicalId, and an entity definition gains
+    `untypedProperties`. Those are Fabric's, not ours, so a plain == reports all 40 parts as
+    changed on an untouched model. Compare our keys only, and ignore extra ones."""
+    if isinstance(built, dict):
+        return isinstance(stored, dict) and all(
+            k in stored and sends_same(v, stored[k]) for k, v in built.items())
+    if isinstance(built, list):
+        return (isinstance(stored, list) and len(built) == len(stored)
+                and all(sends_same(a, b) for a, b in zip(built, stored)))
+    return built == stored
+
+
+if "--check" in sys.argv:
+    # Diff the parts this YAML produces against a folder download.py fetched earlier, and
+    # stop. No token, no deploy. An empty diff means the edit was a no-op on the wire; an
+    # unexpected ADDED/REMOVED pair is the signature of an accidental RENAME, because every
+    # id is hashed from a name -- a renamed entity does not update, it forks.
+    built = {p["path"]: json.loads(base64.b64decode(p["payload"]).decode()) for p in parts}
+    stored = {}
+    for dirpath, _, filenames in os.walk(CHECK_DIR):
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            rel_path = os.path.relpath(full, CHECK_DIR).replace(os.sep, "/")
+            with open(full, encoding="utf-8-sig") as fh:      # Fabric writes a BOM
+                stored[rel_path] = json.load(fh)
+    if not stored:
+        raise SystemExit(f"nothing to compare against in {CHECK_DIR!r} — "
+                         f"run `python download.py` first")
+    added, removed = sorted(set(built) - set(stored)), sorted(set(stored) - set(built))
+    changed = sorted(p for p in set(built) & set(stored)
+                     if not sends_same(built[p], stored[p]))
+    for label, paths in (("ADDED", added), ("REMOVED", removed), ("CHANGED", changed)):
+        for p in paths:
+            print(f"  {label:<8} {p}")
+    print(f"\n{len(built)} parts built, {len(stored)} stored — "
+          f"{len(added)} added, {len(removed)} removed, {len(changed)} changed")
+    raise SystemExit(1 if (added or removed or changed) else 0)
 
 session = requests.Session()
 session.headers["Authorization"] = f"Bearer {get_fabric_token()}"
@@ -322,8 +243,7 @@ if existing:
 else:
     created = call("POST", f"{API}/workspaces/{WORKSPACE}/ontologies", json={
         "displayName": ONTOLOGY,
-        "description": "NEM ontology: unit observations plus regional demand/price and "
-                       "interconnector flows, on the wide mart layer",
+        "description": DESCRIPTION,
         "folderId": folder_id,
         "definition": {"parts": parts},
     })
