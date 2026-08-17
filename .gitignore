@@ -1,6 +1,7 @@
 __pycache__/
 target/
 logs/
+fabric_download/
 nul
 %SystemDrive%/
 _fab_deploy_pipeline.yml
