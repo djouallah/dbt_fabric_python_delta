@@ -71,22 +71,36 @@ res = dbt.invoke(argv)
 elapsed = int(time.time() - t0)
 
 
+def nodes(r):
+    """The per-node results, or [] when the command doesn't have any.
+
+    `docs generate` returns a CatalogArtifact rather than a node list, so `res.result or []`
+    is not enough — iterating it raises TypeError and fails a step whose dbt command
+    actually succeeded."""
+    return r.result if isinstance(r.result, list) else []
+
+
+def node_name(r):
+    """remote reports {"node": name}; local reports a RunResult whose .node is an object."""
+    return (r.get("node", "?") if isinstance(r, dict)
+            else getattr(getattr(r, "node", None), "name", "?"))
+
+
+def node_status(r):
+    return r.get("status", "?") if isinstance(r, dict) else getattr(r, "status", "?")
+
+
 def snapshot(dest):
     """Leave a run_results.json where the CI dashboard expects it."""
     local_artifact = os.path.join("dbt", "target", "run_results.json")
     if os.path.exists(local_artifact):        # local runner: dbt wrote the real thing
         shutil.copy(local_artifact, dest)
         return
-    rows = []
-    for r in (res.result or []):
-        # remote reports {"node": name}; local reports a RunResult whose .node is an object
-        name = (r.get("node", "?") if isinstance(r, dict)
-                else getattr(getattr(r, "node", None), "name", "?"))
-        status = r.get("status", "?") if isinstance(r, dict) else getattr(r, "status", "?")
-        # The dashboard filters run results on a `model.` prefix and counts test rows, so the
-        # id has to be prefixed even though the remote result reports a bare node name.
-        rows.append({"unique_id": f"{node_kind}.{name}", "status": str(status),
-                     "execution_time": 0})
+    # The dashboard filters run results on a `model.` prefix and counts test rows, so the id
+    # has to be prefixed even though the remote result reports a bare node name.
+    rows = [{"unique_id": f"{node_kind}.{node_name(r)}", "status": str(node_status(r)),
+             "execution_time": 0}
+            for r in nodes(res)]
     with open(dest, "w", encoding="utf-8") as f:
         json.dump({"results": rows}, f)
 
@@ -103,14 +117,12 @@ if github_env:
         if command == "run":
             f.write(f"DBT_RUNNER_USED={where}\n")
 
-failed = [r for r in (res.result or [])
+failed = [r for r in nodes(res)
           if str(r.get("status") if isinstance(r, dict) else getattr(r, "status", "")).lower()
           not in ("success", "pass", "skipped")]
 for r in failed:
-    name = r.get("node", "?") if isinstance(r, dict) else getattr(r, "node", "?")
-    status = r.get("status", "?") if isinstance(r, dict) else getattr(r, "status", "?")
-    print(f"  {status:10} {name}")
+    print(f"  {node_status(r):10} {node_name(r)}")
 print(f"=== dbt {command}: success={res.success} in {elapsed}s "
-      f"({len(res.result or [])} nodes, {len(failed)} not ok) ===", flush=True)
+      f"({len(nodes(res))} nodes, {len(failed)} not ok) ===", flush=True)
 
 sys.exit(0 if res.success else 1)
