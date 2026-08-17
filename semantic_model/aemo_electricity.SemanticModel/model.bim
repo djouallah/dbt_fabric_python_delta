@@ -164,6 +164,14 @@
         "sourceLineageTag": "[aemo].[fct_summary]",
         "columns": [
           {
+            "name": "DateKey",
+            "dataType": "int64",
+            "description": "YYYYMMDD integer date key — joins dim_calendar",
+            "sourceColumn": "DateKey",
+            "sourceLineageTag": "DateKey",
+            "summarizeBy": "none"
+          },
+          {
             "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
@@ -301,6 +309,14 @@
         "sourceLineageTag": "[aemo].[fct_region]",
         "columns": [
           {
+            "name": "DateKey",
+            "dataType": "int64",
+            "description": "YYYYMMDD integer date key — joins dim_calendar",
+            "sourceColumn": "DateKey",
+            "sourceLineageTag": "DateKey",
+            "summarizeBy": "none"
+          },
+          {
             "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
@@ -418,6 +434,14 @@
         "description": "Power flow between regions for the full history, solved from NetInterchange.\nGrain: one row per 5-minute interval per region-pair.\nValid only while the NEM is a tree — retire in favour of fct_interconnector once EnergyConnect (SA1-NSW1) commissions.",
         "sourceLineageTag": "[aemo].[fct_interconnector_derived]",
         "columns": [
+          {
+            "name": "DateKey",
+            "dataType": "int64",
+            "description": "YYYYMMDD integer date key — joins dim_calendar",
+            "sourceColumn": "DateKey",
+            "sourceLineageTag": "DateKey",
+            "summarizeBy": "none"
+          },
           {
             "name": "TimeHHMM",
             "dataType": "int64",

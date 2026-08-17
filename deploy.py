@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import runpy
 
 import duckrun
@@ -39,12 +41,52 @@ ws.deploy("fabric_items", folder=FOLDER, overwrite=True, variables={
     "workspace_id":           ws.id,
 })
 
+def check_bim(conn):
+    """Fail here, not in Fabric, when the bim references something the tables don't have.
+
+    A Direct Lake model that binds a missing column does not fail at deploy with a useful
+    message: Fabric either rejects the import with `Workload_FailedToParseFile` naming an
+    object id, or accepts it and fails the REFRESH with a Delta protocol violation, minutes
+    later. Both cost a full pipeline run to discover. This checks the three ways the bim can
+    go stale after a mart schema change -- a column that no longer exists, a relationship
+    endpoint that was never added, and DAX naming a dropped column -- against the tables that
+    were just built. Every one of these has actually happened here.
+    """
+    with open("semantic_model/aemo_electricity.SemanticModel/model.bim", encoding="utf-8-sig") as f:
+        model = json.load(f)["model"]
+    cols = {t["name"]: {c["name"] for c in t.get("columns", [])} for t in model["tables"]}
+    problems = []
+    for t in model["tables"]:
+        src = t["partitions"][0]["source"]
+        schema, entity = src.get("schemaName", "mart"), src.get("entityName", t["name"])
+        want = {c["sourceColumn"] for c in t.get("columns", []) if "sourceColumn" in c}
+        have = {r[0] for r in conn.sql(f'DESCRIBE "{schema}"."{entity}"').fetchall()}
+        problems += [f"{t['name']}.{c}: not in {schema}.{entity}" for c in sorted(want - have)]
+    for r in model.get("relationships", []):
+        for side in ("from", "to"):
+            table, column = r[f"{side}Table"], r[f"{side}Column"]
+            if column not in cols.get(table, set()):
+                problems.append(f"relationship {r.get('name', '?')}: {table}[{column}] undefined")
+    measures = {m["name"] for t in model["tables"] for m in t.get("measures", [])}
+    for t in model["tables"]:
+        for m in t.get("measures", []):
+            for table, column in re.findall(r"(\w+)\[([^\]]+)\]", m["expression"]):
+                known = {c.lower() for c in cols.get(table, set())} | {x.lower() for x in measures}
+                if column.lower() not in known:
+                    problems.append(f"measure {m['name']}: {table}[{column}] undefined")
+    if problems:
+        raise SystemExit("semantic model is stale against the mart:\n  " + "\n  ".join(problems))
+    print(f"semantic model OK ({len(model['tables'])} tables, "
+          f"{len(model.get('relationships', []))} relationships)")
+
+
 # The semantic model deploys from its own folder because duckrun's deploy() takes no exclude
 # filter -- a single fabric_items/ call is all-or-nothing. Splitting it out is what makes it
 # skippable. fabric_items/ still holds exactly one notebook, so the pipeline's notebook
 # activities are still auto-wired; lakehouse= lives here now because the Direct Lake bim is
 # the only thing that ever consumed it.
 if DEPLOY_MODEL:
+    check_bim(files)
     ws.deploy("semantic_model", lakehouse=LAKEHOUSE, folder=FOLDER, overwrite=True)
 else:
     print("=== Skipping the semantic model (DEPLOY_SEMANTIC_MODEL=false) ===")
