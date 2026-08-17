@@ -40,7 +40,7 @@ SELECT
   f.date,
   f.TimeHHMM,
   f.InterconnectorID,
-  CAST(f.date AS VARCHAR) AS DateKey,
+  CAST(strftime(f.date, '%Y%m%d') AS INT) AS DateKey,
   d.Name,
   d.FromRegionID,
   d.ToRegionID,

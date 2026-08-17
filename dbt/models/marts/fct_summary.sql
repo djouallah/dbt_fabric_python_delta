@@ -60,8 +60,10 @@ SELECT
   -- property, which then ingests as NULL against a Double property -- silently.
   CAST(MW AS DOUBLE) AS MW,
   CAST(Price AS DOUBLE) AS Price,
-  -- ISO date as a string: ontology entity KEY parts may only be String/Integer, so the
+  -- YYYYMMDD integer: ontology entity KEY parts may only be String or Integer, so the
   -- Observation entity keys on [DUID, DateKey, TimeHHMM] -- DATE itself is banned there.
-  CAST(date AS VARCHAR) AS DateKey
+  -- Integer, not an ISO string: it compares and range-filters in GQL without quoting,
+  -- and sorts identically. `date` stays a real DATE for Power BI's calendar join.
+  CAST(strftime(date, '%Y%m%d') AS INT) AS DateKey
 FROM daily_summary
 ORDER BY date

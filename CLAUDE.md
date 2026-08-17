@@ -259,7 +259,7 @@ schema map and the `u.RegionID` filters in `gql.py`/`shutdown.py` all changed in
   value type matches (`GeneratingUnit.RegionID` and `Station.RegionID` are both plain `RegionID`). So
   v1's concatenated `UnitDayKey` surrogate and global name prefixing were both
   unnecessary. Still true: key parts are String/Integer only — a date in the key must be
-  an ISO string (`DateKey`), and a brand-new graph answers `GraphNotQueryable` (HTTP 400)
+  a `DateKey` integer, and a brand-new graph answers `GraphNotQueryable` (HTTP 400)
   until its first load completes.
 - **TimeSeries-bound properties are INVISIBLE to GQL — by design** (the v3 dead end; this
   is why no entity in `ontology.py` uses `timeseriesProperties`).
@@ -413,12 +413,20 @@ schema map and the `u.RegionID` filters in `gql.py`/`shutdown.py` all changed in
   therefore walks one hop at a time and closes in Python. Modelling the link as an edge
   would allow `{1,n}` but lose per-link filtering, because relationship instances carry
   no properties. `shutdown.py` walks the closure in Python for exactly this reason.
-- **GQL date ranges work via an ISO-date String property.** GQL has **no date functions or
-  literals**, so every fact mart carries `DateKey` (`CAST(date AS VARCHAR)`). ISO-8601
-  strings order lexicographically, so
-  `WHERE ri.DateKey >= '2026-08-05' AND ri.DateKey <= '2026-08-11'` filters a week fine —
-  no per-day key-equality OR chains needed. Dates are also banned as entity **key** parts
-  (String/Integer only), which is the other reason `DateKey` exists.
+- **GQL date ranges work via a YYYYMMDD INTEGER property.** GQL has **no date functions or
+  literals**, so every fact mart carries `DateKey`
+  (`CAST(strftime(date, '%Y%m%d') AS INT)`). It compares and orders numerically, so
+  `WHERE ri.DateKey >= 20260805 AND ri.DateKey <= 20260811` filters a week fine — unquoted,
+  no per-day key-equality OR chains. Dates are banned as entity **key** parts (String or
+  Integer only), which is why `DateKey` exists at all.
+  It was an ISO string (`CAST(date AS VARCHAR)`) until it was pointed out that Integer is
+  just as valid a key part — `TimeHHMM` had been proving that all along. The integer is
+  smaller, needs no quoting in generated GQL, and sorts identically.
+  **The one trap: subtract CALENDAR days, not integers.** The day before `20260801` is
+  `20260731`, not `20260800`. `data_agent.py`'s instructions say so explicitly, because the
+  agent does this arithmetic itself.
+  `date` stays a real `DATE` alongside it — that is what Power BI's calendar relationship
+  joins on, and a `DATE` is strictly better there than an integer.
 - **The latest day is almost always PARTIAL, so never divide by 288.** `fct_summary` carries
   an intraday tail, so `max(DateKey)` is today with only the intervals published so far —
   49 of 288 at the time of writing, which is why a week comes to 1,777 rows and not 2,016.

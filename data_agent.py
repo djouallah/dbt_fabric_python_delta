@@ -62,14 +62,14 @@ Entity types and their properties:
   RegCapMW: Double)
 - GeneratingUnit(DUID: String key, RegionID: String, FuelSource: String, DispatchType: String,
   Technology: String, RegCapMW: Double, StationName: String)
-- Observation(DUID: String, DateKey: String, TimeHHMM: BigInt -- these three together are
+- Observation(DUID: String, DateKey: BigInt, TimeHHMM: BigInt -- these three together are
   the key; RegionID: String, MW: Double, Price: Double)
   One row per UNIT per 5-minute interval. ~11.9 million nodes.
-- RegionInterval(RegionID: String, DateKey: String, TimeHHMM: BigInt -- these three together
+- RegionInterval(RegionID: String, DateKey: BigInt, TimeHHMM: BigInt -- these three together
   are the key; Price: Double, TotalDemand: Double, NetInterchange: Double,
   AvailableGeneration: Double, DispatchableGeneration: Double)
   One row per REGION per 5-minute interval. ~373 thousand nodes.
-- Flow(LinkID: String, DateKey: String, TimeHHMM: BigInt -- these three together are the key;
+- Flow(LinkID: String, DateKey: BigInt, TimeHHMM: BigInt -- these three together are the key;
   LinkName: String, FromRegionID: String, ToRegionID: String, FlowMW: Double,
   NetworkLossMW: Double)
   One row per region-PAIR per 5-minute interval. ~298 thousand nodes.
@@ -115,9 +115,9 @@ question allows -- they are faster and far less error-prone.
 
 1. There is no round() function. Return full precision and let the reader round.
    avg() IS available, alongside sum(), count(), min() and max().
-2. There are no date literals and no date functions. Dates are ISO-8601 strings in DateKey
-   ('2026-08-09'), which order lexicographically -- so a date range is
-   WHERE ri.DateKey >= '2026-08-03' AND ri.DateKey <= '2026-08-09'.
+2. There are no date literals and no date functions. Dates are YYYYMMDD INTEGERS in DateKey
+   (2026-08-09 is 20260809) -- unquoted, and ordering numerically, so a date range is
+   WHERE ri.DateKey >= 20260803 AND ri.DateKey <= 20260809.
 3. There is no implicit Cypher-style grouping. Returning a plain property alongside an
    aggregate fails with "neither part of the GROUP BY nor an aggregation". Write the
    GROUP BY out: RETURN ri.DateKey AS day, avg(ri.Price) AS price GROUP BY day ORDER BY day.
@@ -183,12 +183,13 @@ question allows -- they are faster and far less error-prone.
   intervals, because it is still being published.
 - To resolve any relative expression, FIRST get the anchor:
       MATCH (ri:RegionInterval) RETURN max(ri.DateKey) AS latest
-  then subtract from it yourself -- GQL has no date arithmetic and DateKey is a plain ISO
-  string, so nothing can compute this for you -- and put the resulting LITERAL dates inline
-  in ONE aggregate query:
-      "today"/"latest" -> DateKey = '<latest>'
-      "yesterday"      -> DateKey = '<the day before latest>'
-      "last week"      -> DateKey >= '<six days before latest>' AND DateKey <= '<latest>'
+  then subtract from it yourself -- GQL has no date arithmetic and DateKey is a plain
+  YYYYMMDD integer, so nothing can compute this for you. Subtract CALENDAR days, not integers:
+  the day before 20260801 is 20260731, NOT 20260800. Put the results inline, unquoted, in ONE
+  aggregate query:
+      "today"/"latest" -> DateKey = <latest>
+      "yesterday"      -> DateKey = <the calendar day before latest>
+      "last week"      -> DateKey >= <six calendar days before latest> AND DateKey <= <latest>
 - THE SECOND QUERY IS WHERE THIS GOES WRONG, so read this twice. Having found the anchor,
   the aggregate that follows reliably comes back MISSING its date predicate -- you average
   eight years of history while believing you filtered to a week, and state the correct range
@@ -257,26 +258,26 @@ Q: Average spot price in SA1 last week. FIRST anchor the window, THEN aggregate.
 MATCH (ri:RegionInterval) RETURN max(ri.DateKey) AS latest
 -- then, with latest = '2026-08-11', the seven days ending there:
 MATCH (ri:RegionInterval)
-WHERE ri.RegionID = 'SA1' AND ri.DateKey >= '2026-08-05' AND ri.DateKey <= '2026-08-11'
+WHERE ri.RegionID = 'SA1' AND ri.DateKey >= 20260805 AND ri.DateKey <= 20260811
 RETURN ri.DateKey AS day, avg(ri.Price) AS price, count(ri.Price) AS intervals
 GROUP BY day ORDER BY day
 
 Q: Demand and spare capacity in Queensland for a week.
 MATCH (ri:RegionInterval)
-WHERE ri.RegionID = 'QLD1' AND ri.DateKey >= '2026-08-05' AND ri.DateKey <= '2026-08-11'
+WHERE ri.RegionID = 'QLD1' AND ri.DateKey >= 20260805 AND ri.DateKey <= 20260811
 RETURN avg(ri.TotalDemand) AS avg_demand_mw, max(ri.TotalDemand) AS peak_demand_mw,
        avg(ri.AvailableGeneration - ri.TotalDemand) AS avg_reserve_mw,
        count(ri.TotalDemand) AS intervals
 
 Q: Is Queensland a net importer or exporter, and how much?
 MATCH (ri:RegionInterval)
-WHERE ri.RegionID = 'QLD1' AND ri.DateKey >= '2026-08-05' AND ri.DateKey <= '2026-08-11'
+WHERE ri.RegionID = 'QLD1' AND ri.DateKey >= 20260805 AND ri.DateKey <= 20260811
 RETURN avg(ri.NetInterchange) AS avg_net_export_mw, min(ri.NetInterchange) AS max_import_mw,
        max(ri.NetInterchange) AS max_export_mw
 
 Q: How much power flowed between regions last week?
 MATCH (f:Flow)
-WHERE f.DateKey >= '2026-08-05' AND f.DateKey <= '2026-08-11'
+WHERE f.DateKey >= 20260805 AND f.DateKey <= 20260811
 RETURN f.LinkID AS link, f.LinkName AS name, avg(f.FlowMW) AS avg_mw,
        min(f.FlowMW) AS max_reverse_mw, max(f.FlowMW) AS max_forward_mw
 GROUP BY link, name ORDER BY link
@@ -289,12 +290,12 @@ RETURN count(DISTINCT u.DUID) AS units, sum(u.RegCapMW) AS mw
 
 Q: Daily generation for a unit over a week.
 MATCH (u:GeneratingUnit)-[:PRODUCED]->(o:Observation)
-WHERE u.DUID = 'BW01' AND o.DateKey >= '2026-08-03' AND o.DateKey <= '2026-08-09'
+WHERE u.DUID = 'BW01' AND o.DateKey >= 20260803 AND o.DateKey <= 20260809
 RETURN o.DateKey AS day, sum(o.MW) * 5 / 60 AS mwh GROUP BY day ORDER BY day
 
 Q: Total generation in a region on one day. Observation carries RegionID, so no join.
 MATCH (o:Observation)
-WHERE o.RegionID = 'SA1' AND o.DateKey = '2026-08-09'
+WHERE o.RegionID = 'SA1' AND o.DateKey = 20260809
 RETURN sum(o.MW) * 5 / 60 AS mwh, count(o.MW) AS readings,
        count(DISTINCT o.DUID) AS units
 
@@ -302,13 +303,13 @@ Q: A unit's output through one day, interval by interval. Even a "time series" a
    through an aggregate -- never return bare rows. time_hhmm comes back as 0, 5, ... 55,
    100, 105 ... which is the clock, not a running minute count.
 MATCH (o:Observation)
-WHERE o.DUID = 'BW01' AND o.DateKey = '2026-08-09'
+WHERE o.DUID = 'BW01' AND o.DateKey = 20260809
 RETURN o.TimeHHMM AS time_hhmm, avg(o.MW) AS mw
 GROUP BY time_hhmm ORDER BY time_hhmm
 
 Q: Output during the evening peak (18:00 to 20:00) on one day.
 MATCH (o:Observation)
-WHERE o.RegionID = 'SA1' AND o.DateKey = '2026-08-09'
+WHERE o.RegionID = 'SA1' AND o.DateKey = 20260809
   AND o.TimeHHMM >= 1800 AND o.TimeHHMM <= 2000
 RETURN sum(o.MW) * 5 / 60 AS mwh, count(o.MW) AS readings
 

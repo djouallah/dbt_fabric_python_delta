@@ -51,30 +51,30 @@ QUERIES = [
     ("SA1 avg price 2026-08-09 from RegionInterval ($35.665 over 288 intervals). "
      "Averaging Observation.Price instead gives 35.145 -- a UNIT-WEIGHTED mean over "
      "15,032 rows, which is the wrong question",
-     "MATCH (ri:RegionInterval) WHERE ri.RegionID = 'SA1' AND ri.DateKey = '2026-08-09' "
+     "MATCH (ri:RegionInterval) WHERE ri.RegionID = 'SA1' AND ri.DateKey = 20260809 "
      "RETURN avg(ri.Price) AS price, count(ri.Price) AS intervals"),
 
     ("QLD1 demand, week to 2026-08-11 (avg 5915.88, peak 8071.7, NI +797.15, "
      "1777 intervals)",
      "MATCH (ri:RegionInterval) WHERE ri.RegionID = 'QLD1' "
-     "AND ri.DateKey >= '2026-08-05' AND ri.DateKey <= '2026-08-11' "
+     "AND ri.DateKey >= 20260805 AND ri.DateKey <= 20260811 "
      "RETURN avg(ri.TotalDemand) AS avg_demand, max(ri.TotalDemand) AS peak_demand, "
      "avg(ri.NetInterchange) AS avg_net_export, count(ri.TotalDemand) AS intervals"),
 
     ("Corridor flows, week to 2026-08-11 (QLD1-NSW1 -797.15, VIC1-NSW1 +444.37, "
      "SA1-VIC1 -32.60, TAS1-VIC1 -125.15)",
-     "MATCH (f:Flow) WHERE f.DateKey >= '2026-08-05' AND f.DateKey <= '2026-08-11' "
+     "MATCH (f:Flow) WHERE f.DateKey >= 20260805 AND f.DateKey <= 20260811 "
      "RETURN f.LinkID AS link, avg(f.FlowMW) AS avg_mw GROUP BY link ORDER BY link"),
 
     ("SA1 generation 2026-08-09 (46,351.5 MWh, 15,032 readings, 66 units). "
      "Observation carries RegionID, so no join is needed",
-     "MATCH (o:Observation) WHERE o.RegionID = 'SA1' AND o.DateKey = '2026-08-09' "
+     "MATCH (o:Observation) WHERE o.RegionID = 'SA1' AND o.DateKey = 20260809 "
      "RETURN sum(o.MW) * 5 / 60 AS mwh, count(o.MW) AS readings, "
      "count(DISTINCT o.DUID) AS units"),
 
     ("Region -[:OBSERVED]-> RegionInterval traverses (TAS1, 288 intervals)",
      "MATCH (r:Region)-[:OBSERVED]->(ri:RegionInterval) "
-     "WHERE r.RegionID = 'TAS1' AND ri.DateKey = '2026-08-09' "
+     "WHERE r.RegionID = 'TAS1' AND ri.DateKey = 20260809 "
      "RETURN avg(ri.TotalDemand) AS demand, count(ri.TotalDemand) AS intervals"),
 ]
 

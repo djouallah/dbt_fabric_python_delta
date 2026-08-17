@@ -12,7 +12,7 @@
 #   and the column ingests as all NULL, silently. Every mart casts its measures to DOUBLE.
 #
 # `keys` is a list (composite keys are supported and used). Key parts may only be String or
-# Integer, which is why dates appear as the ISO string DateKey rather than a date type.
+# Integer, which is why dates appear as DateKey, a YYYYMMDD integer, rather than a date type.
 # `display` defaults to the first key.
 #
 # TWO NAMES ARE DELIBERATE WORKAROUNDS for GQL reserved words: GeneratingUnit (was `Unit`) and
@@ -90,7 +90,7 @@ entities:
     display: DUID
     properties:
       DUID:     [DUID,     String]
-      DateKey:  [DateKey,  String]
+      DateKey:  [DateKey,  BigInt]
       TimeHHMM: [TimeHHMM, BigInt]
       RegionID: [RegionID, String]
       MW:       [MW,       Double]
@@ -104,7 +104,7 @@ entities:
     display: RegionID
     properties:
       RegionID:               [RegionID,               String]
-      DateKey:                [DateKey,                String]
+      DateKey:                [DateKey,                BigInt]
       TimeHHMM:               [TimeHHMM,               BigInt]
       Price:                  [Price,                  Double]
       TotalDemand:            [TotalDemand,            Double]
@@ -120,7 +120,7 @@ entities:
     display: LinkID
     properties:
       LinkID:        [LinkID,        String]
-      DateKey:       [DateKey,       String]
+      DateKey:       [DateKey,       BigInt]
       TimeHHMM:      [TimeHHMM,      BigInt]
       LinkName:      [LinkName,      String]
       FromRegionID:  [FromRegionID,  String]

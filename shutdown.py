@@ -61,7 +61,7 @@ links = gql("MATCH (i:Interconnector) WHERE i.InService "
             "RETURN i.InterconnectorID AS id, i.Name AS name")
 regions = {r["r"] for r in
            gql("MATCH (r:Region) WHERE r.Market = 'NEM' RETURN r.RegionID AS r")}
-# DateKey is already an ISO string, so no truncation dance. RegionInterval is ~30x smaller
+# DateKey is already a YYYYMMDD integer, so no truncation dance. RegionInterval is ~30x smaller
 # than Observation, so it is the cheap place to ask what the latest day is.
 day = gql("MATCH (ri:RegionInterval) RETURN max(ri.DateKey) AS d")[0]["d"]
 
@@ -89,7 +89,7 @@ for link in sorted(links, key=lambda l: l["name"]):
     # summed total by 288: the latest day is usually PARTIAL (today's intraday tail), so the
     # true interval count is whatever avg() sees, not a full day's worth.
     where_region = " OR ".join(f"ri.RegionID = '{r}'" for r in stranded)
-    rows = gql(f"MATCH (ri:RegionInterval) WHERE ri.DateKey = '{day}' "
+    rows = gql(f"MATCH (ri:RegionInterval) WHERE ri.DateKey = {day} "
                f"AND ({where_region}) "
                "RETURN ri.RegionID AS r, avg(ri.TotalDemand) AS mw, "
                "count(ri.TotalDemand) AS n GROUP BY r")

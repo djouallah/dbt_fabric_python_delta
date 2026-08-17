@@ -22,7 +22,7 @@ SELECT
   c.DATE AS date,
   CAST(strftime(c.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
   c.CONSTRAINTID AS ConstraintID,
-  CAST(c.DATE AS VARCHAR) AS DateKey,
+  CAST(strftime(c.DATE, '%Y%m%d') AS INT) AS DateKey,
   c.DUID,
   -- DOUBLE, never DECIMAL(p,s): see fct_region.
   CAST(MAX(c.RHS)             AS DOUBLE) AS RHS,

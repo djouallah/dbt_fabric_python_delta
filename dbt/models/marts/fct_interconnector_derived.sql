@@ -76,7 +76,7 @@ SELECT
   date,
   TimeHHMM,
   LinkID,
-  CAST(date AS VARCHAR) AS DateKey,
+  CAST(strftime(date, '%Y%m%d') AS INT) AS DateKey,
   FromRegionID,
   ToRegionID,
   LinkName,

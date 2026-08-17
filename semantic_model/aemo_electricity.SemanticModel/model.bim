@@ -205,34 +205,25 @@
             "sourceColumn": "Price",
             "sourceLineageTag": "Price",
             "summarizeBy": "none"
-          },
-          {
-            "name": "cutoff",
-            "dataType": "dateTime",
-            "description": "Timestamp of the latest data refresh cutoff",
-            "formatString": "yyyy-MM-dd HH:mm",
-            "sourceColumn": "cutoff",
-            "sourceLineageTag": "cutoff",
-            "summarizeBy": "none"
           }
         ],
         "measures": [
           {
             "name": "Total MW",
             "description": "Total megawatts across all selected generators and time periods",
-            "expression": "SUM(fct_summary[mw])",
+            "expression": "SUM(fct_summary[MW])",
             "formatString": "#,##0"
           },
           {
             "name": "Total MWh",
             "description": "Total megawatt-hours. Divides MW by 12 because each row is a 5-minute interval (60/5 = 12).",
-            "expression": "SUM(fct_summary[mw]) / 12",
+            "expression": "SUM(fct_summary[MW]) / 12",
             "formatString": "#,##0"
           },
           {
             "name": "Avg Price",
             "description": "Average electricity price in AUD per MWh across selected data",
-            "expression": "AVERAGE(fct_summary[price])",
+            "expression": "AVERAGE(fct_summary[Price])",
             "formatString": "$#,##0.00"
           },
           {
@@ -243,9 +234,9 @@
           },
           {
             "name": "Latest Update",
-            "description": "Most recent data refresh timestamp, ignoring all filters",
-            "expression": "CALCULATE(MAX(fct_summary[cutoff]), REMOVEFILTERS())",
-            "formatString": "yyyy-MM-dd HH:mm"
+            "description": "Most recent date present in the data, ignoring all filters",
+            "expression": "CALCULATE(MAX(fct_summary[date]), REMOVEFILTERS())",
+            "formatString": "yyyy-MM-dd"
           }
         ],
         "partitions": [

@@ -53,8 +53,8 @@ SELECT
   TimeHHMM,
   RegionID,
   -- ISO date as a string: ontology entity KEY parts may only be String/Integer, so any
-  -- future entity keyed on this table needs DateKey rather than DATE.
-  CAST(date AS VARCHAR) AS DateKey,
+  -- future entity keyed on this table needs DateKey (YYYYMMDD int) rather than DATE.
+  CAST(strftime(date, '%Y%m%d') AS INT) AS DateKey,
   -- DOUBLE, never DECIMAL(p,s): a parameterised decimal binds to a String ontology property
   -- and ingests as silent NULL against a Double property.
   CAST(Price                  AS DOUBLE) AS Price,

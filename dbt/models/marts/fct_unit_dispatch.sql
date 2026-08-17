@@ -56,7 +56,7 @@ SELECT
   TimeHHMM,
   DUID,
   RegionID,
-  CAST(date AS VARCHAR) AS DateKey,
+  CAST(strftime(date, '%Y%m%d') AS INT) AS DateKey,
   -- DOUBLE, never DECIMAL(p,s): see fct_region.
   CAST(InitialMW       AS DOUBLE) AS InitialMW,
   CAST(TotalClearedMW  AS DOUBLE) AS TotalClearedMW,
