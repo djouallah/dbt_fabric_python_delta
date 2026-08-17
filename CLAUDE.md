@@ -8,11 +8,9 @@ GitHub Actions is the real orchestrator; the notebook + pipeline are the in-Fabr
 
 `fabric_items/` is the Fabric git-integration layout (`<name>.<ItemType>/` each with a
 `.platform`). `ws.deploy("fabric_items", ...)` ships the whole tree **in dependency order** —
-Variable Library → Notebook → Semantic Model → Data Pipeline — and returns `{displayName: id}`:
+Variable Library → Notebook → Data Pipeline — and returns `{displayName: id}`:
 
 - **Names come from each `.platform`** — no `name=` and no folder-name parsing needed.
-- **`lakehouse=`** repoints the Direct Lake `model.bim`'s OneLake workspace/lakehouse GUIDs and
-  **refreshes** the model. The checked-in bim keeps its original dev GUIDs; never hand-edit them.
 - **Pipeline notebook activities are auto-wired** to the folder's notebook when there is exactly
   one (ours is `run`). No patching `notebookId`/`workspaceId` by index. Pass `notebook=` only if
   the folder ever gains a second notebook.
@@ -24,14 +22,39 @@ Variable Library → Notebook → Semantic Model → Data Pipeline — and retur
 - **`ws.schedule(name, every="720m")`** is idempotent — it updates the existing schedule rather
   than stacking duplicates. No list/dedup logic.
 
+**The semantic model lives in `semantic_model/`, NOT `fabric_items/`, because duckrun's
+`deploy()` takes no exclude filter.** A single `fabric_items/` call is all-or-nothing, so the
+only way to make the model optional was to give it its own folder and its own gated call,
+behind `DEPLOY_SEMANTIC_MODEL` (env var — NOT `sys.argv`, which `data_agent.py` scans for
+`--dump` under `runpy`). The workflow's `deploy` input drives it: `no_model` exports
+`DEPLOY_SEMANTIC_MODEL=false`. Consequences worth knowing:
+
+- **`lakehouse=` now sits only on the `semantic_model` call.** It was always a no-op on the
+  other three item types (duckrun forwards it and ignores it for anything that isn't a Direct
+  Lake `.bim`). It still repoints the bim's OneLake workspace/lakehouse GUIDs and **refreshes**
+  the model — the checked-in bim keeps its original dev GUIDs; never hand-edit them.
+- **The pipeline auto-wiring survives** because `fabric_items/` still has exactly one notebook.
+  Do NOT "fix" this by looping `ws.deploy` over the individual item folders instead — a
+  per-item scan can't see the notebook list, so it would force a hardcoded `notebook="run"`
+  and a hand-maintained item list, losing the `.platform`-derived names.
+- **The pipeline now deploys BEFORE the model** (one sorted pass used to put the model third).
+  Nothing depends on that order — `_DEPLOY_ORDER` exists for the notebook wiring, and no item
+  references the model. The pipeline has only `TridentNotebook` activities, no `RefreshDataset`.
+- **Skipping the model is safe** because nothing downstream binds to it: the ontology and data
+  agent read the mart **Delta tables**. It is also the slow part of a deploy — the Direct Lake
+  reframe blocks until it lands — so `no_model` is the fast loop for ontology work.
+- **A `no_model` run leaves the deployed model in place**, just stale. Nothing to clean up; a
+  later `full` run redeploys and refreshes it.
+
 **The ontology and data agent deploy from `deploy.py` too, just not from `fabric_items/`.**
 duckrun's folder deploy only knows `VariableLibrary`, `Notebook`, `SemanticModel` and
 `DataPipeline` and raises `unsupported item type` on anything else, so an `.Ontology` folder
 dropped into `fabric_items/` would break the whole deploy. Instead `deploy.py` ends with
 `runpy.run_path("ontology.py")` then `runpy.run_path("data_agent.py")` — same step, same
-`deploy=full` gate, same `aemo` folder as everything else. Order matters: the agent binds the
-ontology by displayName, so the ontology has to exist first. Nothing about them runs locally
-or on a plain push.
+`aemo` folder as everything else, and they run under **both** `deploy=full` and
+`deploy=no_model` (only `none` skips them). Order matters: the agent binds the ontology by
+displayName, so the ontology has to exist first. Nothing about them runs locally or on a
+plain push.
 
 ## Auth: OIDC only, no az login and no token step
 

@@ -108,12 +108,19 @@ GitHub Actions CI
 deploy.py (duckrun workspace API)
     ├── create_lakehouse → Lakehouse (schemas, in the `aemo` folder)
     ├── connect().copy() → dbt/ to OneLake Files
-    └── deploy("fabric_items") → the whole folder, in dependency order:
-        ├── Variable Library (env values injected at deploy time)
-        ├── Notebook
-        ├── Semantic Model (Direct Lake GUIDs repointed, then refreshed)
-        └── Data Pipeline (notebook activities auto-wired) + schedule
+    ├── deploy("fabric_items") → the whole folder, in dependency order:
+    │   ├── Variable Library (env values injected at deploy time)
+    │   ├── Notebook
+    │   └── Data Pipeline (notebook activities auto-wired) + schedule
+    ├── deploy("semantic_model") → Semantic Model (Direct Lake GUIDs repointed,
+    │       then refreshed) — skipped when DEPLOY_SEMANTIC_MODEL=false
+    └── ontology.py → Ontology + Graph, then data_agent.py → Data Agent
 ```
+
+The semantic model sits in its own folder so it can be skipped: duckrun's `deploy()` has no
+exclude filter, so a single `fabric_items/` call would be all-or-nothing. Nothing downstream
+binds to the model — the ontology and data agent read the mart Delta tables — and skipping it
+also skips the Direct Lake reframe, which is the slow part of a deploy.
 
 ![Fabric workspace after deploy: semantic model, lakehouse, variable library, notebook, and pipeline](items.png)
 
@@ -158,8 +165,18 @@ On the Azure side, register an app and add a **federated credential** with subje
 `repo:<owner>/<repo>:ref:refs/heads/main` (and one per deploy branch). Grant it the Fabric
 workspace permissions you need.
 
-Push to `main` runs CI tests and publishes dbt docs to GitHub Pages. Push to `production`
-deploys to Fabric.
+The workflow is **manual only** — run it from the Actions tab or `gh workflow run
+pipeline.yml`. Every run provisions the lakehouse, runs dbt (run / test / docs) and publishes
+the docs to GitHub Pages; deploying the Fabric items is a separate opt-in choice:
+
+| `deploy` | What it deploys |
+|---|---|
+| `none` (default) | Nothing — dbt only |
+| `no_model` | Variable library, notebook, pipeline, ontology and data agent — **not** the semantic model. The already-deployed model is left in place, just not updated or refreshed |
+| `full` | All of the above **plus** the Direct Lake semantic model |
+
+`no_model` is the fast loop for ontology work: the Direct Lake reframe is the slow part of a
+deploy, and nothing in the ontology or data agent binds to the model.
 
 ---
 

@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: "Deploy the Fabric items? (the lakehouse is always provisioned in Phase 1) none = skip; full = deploy the semantic model + notebook/pipeline orchestration demo"
+        description: "Deploy the Fabric items? (the lakehouse is always provisioned in Phase 1) none = skip; no_model = everything except the semantic model; full = everything"
         type: choice
-        options: [none, full]
+        options: [none, no_model, full]
         default: none
       full_refresh:
         description: "Force fct_summary+ --full-refresh (needed after a schema change when no new daily file would trigger the rebuild path)"
@@ -135,16 +135,21 @@ jobs:
           T0=$(date +%s)
           # The lakehouse is always provisioned in Phase 1 — deploying the Fabric items is
           # optional and OFF by default. Orchestration is GitHub Actions; the Fabric
-          # notebook/pipeline are just a demo. Scope is binary: "none" (default, also what a
-          # plain push gets) skips the item deploy; "full" deploys the semantic model +
-          # notebook/VL/pipeline, and the ontology + data agent, via `deploy.py`.
+          # notebook/pipeline are just a demo. Three scopes: "none" (default, also what a
+          # plain push gets) skips the item deploy; "full" deploys everything —
+          # notebook/VL/pipeline, the semantic model, and the ontology + data agent — via
+          # `deploy.py`; "no_model" is "full" minus the semantic model, for iterating on the
+          # ontology without paying for the Direct Lake reframe. The already-deployed model
+          # is left in place under no_model, just not updated.
           DEPLOY="${{ github.event.inputs.deploy }}"
           DEPLOY="${DEPLOY:-none}"
-          if [ "$DEPLOY" != "full" ]; then
+          echo "DEPLOY_SCOPE=$DEPLOY" >> "$GITHUB_ENV"
+          if [ "$DEPLOY" = "none" ]; then
             echo "::notice::Deploy scope 'none' — skipping Fabric item deploy."
             echo "DEPLOY_SKIPPED=true" >> "$GITHUB_ENV"
           else
-            echo "Deploy scope: full"
+            echo "Deploy scope: $DEPLOY"
+            [ "$DEPLOY" = "no_model" ] && export DEPLOY_SEMANTIC_MODEL=false
             python deploy.py
             echo "DEPLOY_SKIPPED=false" >> "$GITHUB_ENV"
           fi
@@ -214,15 +219,19 @@ jobs:
           except FileNotFoundError:
               by_type, n_sources, n_macros = Counter(), 0, 0
 
+          # The semantic model lives outside fabric_items/ so it can be skipped — count it
+          # only when the scope actually deployed it, else a no_model run would over-report.
           items = []
           if env('DEPLOY_SKIPPED') != 'true':
-              try:
-                  for f in sorted(os.listdir('fabric_items')):
-                      if '.' in f:
-                          name, typ = f.rsplit('.', 1)
-                          items.append((typ, name))
-              except FileNotFoundError:
-                  pass
+              dirs = ['fabric_items'] + (['semantic_model'] if env('DEPLOY_SCOPE') == 'full' else [])
+              for d in dirs:
+                  try:
+                      for f in sorted(os.listdir(d)):
+                          if '.' in f:
+                              name, typ = f.rsplit('.', 1)
+                              items.append((typ, name))
+                  except FileNotFoundError:
+                      pass
 
           ws        = env('WS_NAME', '?')
           lh        = env('LH_NAME', '?')
@@ -274,6 +283,8 @@ jobs:
               }
               for typ, name in items:
                   print(f"| {emojis.get(typ, '📦')} {typ} | `{name}` |")
+              if env('DEPLOY_SCOPE') == 'no_model':
+                  print("\n_📊 Semantic model skipped (`deploy: no_model`) — the existing model is untouched_")
           print('\n</td></tr>')
 
           # Row 2: dbt (run · test · docs) — full width, three sub-columns
