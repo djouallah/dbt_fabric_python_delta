@@ -43,7 +43,7 @@ WITH
   duid_wa AS (
     SELECT
       wa_facilities.DUID,
-      wa_facilities.Region,
+      wa_facilities.RegionID,
       wa_energy.Technology AS FuelSource,
       trim(wa_facilities.Participant) AS Participant,
       -- The WEM facilities feed carries no station, dispatch type, technology or

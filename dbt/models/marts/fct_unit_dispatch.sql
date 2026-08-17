@@ -25,7 +25,7 @@ WITH unit_dispatch AS (
     s.DATE AS date,
     CAST(strftime(s.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
     s.DUID,
-    d.Region AS RegionID,
+    d.RegionID,
     -- MAX collapses duplicates from multiple runnos/files for one interval.
     MAX(s.INITIALMW)       AS InitialMW,
     MAX(s.TOTALCLEARED)    AS TotalClearedMW,

@@ -79,7 +79,9 @@ def snapshot(dest):
         return
     rows = []
     for r in (res.result or []):
-        name = r.get("node", "?") if isinstance(r, dict) else getattr(r, "node", "?")
+        # remote reports {"node": name}; local reports a RunResult whose .node is an object
+        name = (r.get("node", "?") if isinstance(r, dict)
+                else getattr(getattr(r, "node", None), "name", "?"))
         status = r.get("status", "?") if isinstance(r, dict) else getattr(r, "status", "?")
         # The dashboard filters run results on a `model.` prefix and counts test rows, so the
         # id has to be prefixed even though the remote result reports a bare node name.
