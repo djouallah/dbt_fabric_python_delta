@@ -35,7 +35,7 @@ QUERIES = [
 
     ("TAS1 participants -- who a Basslink trip isolates (5)",
      "MATCH (u:GeneratingUnit)-[:OPERATED_BY]->(p:Participant) "
-     "WHERE u.Region = 'TAS1' RETURN DISTINCT p.Participant"),
+     "WHERE u.RegionID = 'TAS1' RETURN DISTINCT p.Participant"),
 
     ("Regions one in-service hop from TAS1 (VIC1 via Basslink)",
      "MATCH (r1:Region)<-[:CONNECTS_FROM|CONNECTS_TO]-(i:Interconnector)"

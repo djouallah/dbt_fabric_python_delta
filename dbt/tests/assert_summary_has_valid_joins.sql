@@ -4,7 +4,7 @@
 SELECT
   date,
   DUID,
-  mw
+  MW
 FROM {{ ref('fct_summary') }}
-WHERE price IS NULL
+WHERE Price IS NULL
 LIMIT 10

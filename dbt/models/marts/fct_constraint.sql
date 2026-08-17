@@ -5,7 +5,7 @@
      zero, no influence on the outcome. Those rows are noise at ~303k/day.
 
      This model keeps only the ones that did something: MARGINALVALUE <> 0 (the constraint was
-     binding, and the value is the $/MW shadow price of relaxing it) or VIOLATIONDEGREE <> 0
+     binding, and the value is the $/MW shadow Price of relaxing it) or VIOLATIONDEGREE <> 0
      (it could not even be met). Landing keeps the full set if the slack rows are ever needed.
 
      MarginalValue is the interesting column: it is exactly how much cheaper dispatch would
@@ -14,16 +14,13 @@
 
      HISTORY: intraday only, ~2-day rolling window -- see fct_constraint_today. --#}
 {{ config(
-    materialized='incremental',
-    incremental_strategy='insert',
-    unique_key=['date', 'time', 'ConstraintID'],
-    partition_by=['date'],
+    materialized='table',
     schema='mart'
 ) }}
 
 SELECT
   c.DATE AS date,
-  CAST(strftime(c.SETTLEMENTDATE, '%H%M') AS INT) AS time,
+  CAST(strftime(c.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
   c.CONSTRAINTID AS ConstraintID,
   CAST(c.DATE AS VARCHAR) AS DateKey,
   c.DUID,
@@ -37,7 +34,4 @@ FROM {{ ref('fct_constraint_today') }} c
 WHERE c.INTERVENTION = 0
   -- Binding or violated only. Slack constraints are ~99% of the rows and carry no signal.
   AND (c.MARGINALVALUE <> 0 OR c.VIOLATIONDEGREE <> 0)
-{%- if is_incremental() %}
-  AND c.DATE >= (SELECT COALESCE(MAX(date), CAST('1900-01-01' AS DATE)) FROM {{ this }})
-{%- endif %}
 GROUP BY ALL

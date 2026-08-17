@@ -1,32 +1,8 @@
 {{ config(
-    materialized='incremental',
-    incremental_strategy='append',
-    partition_by=['month_key'],
-    pre_hook="SET VARIABLE price_daily_paths = (SELECT COALESCE(NULLIF(list('{{ get_csv_archive_path() }}' || archive_path), []), ['']) FROM (SELECT archive_path FROM {{ ref('stg_csv_archive_log') }} WHERE source_type = 'daily'{% if is_incremental() %} AND csv_filename NOT IN (SELECT DISTINCT file FROM {{ this }}){% endif %} LIMIT {{ env_var('process_limit', '1000') }}))"
+    materialized='table',
+    pre_hook="SET VARIABLE price_daily_paths = (SELECT COALESCE(NULLIF(list('{{ get_csv_archive_path() }}' || archive_path), []), ['']) FROM (SELECT archive_path FROM {{ ref('stg_csv_archive_log') }} WHERE source_type = 'daily'))"
 ) }}
 
-{#-- append, not merge/insert: dedup is already done in SQL (the pre_hook only loads files
-     NOT already in {{ this }}), so a key-join merge is redundant work that scans the target.
-     append is a plain streaming append (no target scan, DuckDB keeps full memory). Dedup
-     relies on that NOT IN {{ this }} filter under a single writer — the run is not concurrent,
-     so no version compare-and-swap is needed. --#}
-
-{%- set check_files_query -%}
-SELECT COUNT(*) as cnt FROM {{ ref('stg_csv_archive_log') }}
-WHERE source_type = 'daily'
-{%- if is_incremental() %}
-AND csv_filename NOT IN (SELECT DISTINCT file FROM {{ this }})
-{%- endif -%}
-{%- endset -%}
-
-{%- if execute and flags.WHICH == 'run' -%}
-  {%- set files_result = run_query(check_files_query) -%}
-  {%- set has_files = files_result and files_result.rows[0][0] > 0 -%}
-{%- else -%}
-  {%- set has_files = true -%}
-{%- endif -%}
-
-{% if has_files %}
 WITH price_staging AS (
   SELECT *
   FROM read_csv(
@@ -313,6 +289,3 @@ SELECT
   CAST(YEAR(CAST(SETTLEMENTDATE AS TIMESTAMP)) AS INT) * 100
     + CAST(MONTH(CAST(SETTLEMENTDATE AS TIMESTAMP)) AS INT) AS month_key
 FROM price_staging
-{% else %}
-SELECT * FROM {{ this }} WHERE FALSE
-{% endif %}

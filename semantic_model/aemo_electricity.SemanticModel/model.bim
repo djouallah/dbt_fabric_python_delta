@@ -89,11 +89,11 @@
             "summarizeBy": "none"
           },
           {
-            "name": "Region",
+            "name": "RegionID",
             "dataType": "string",
             "description": "NEM region code (e.g. NSW1, QLD1, VIC1, SA1, TAS1, WA1)",
-            "sourceColumn": "Region",
-            "sourceLineageTag": "Region",
+            "sourceColumn": "RegionID",
+            "sourceLineageTag": "RegionID",
             "summarizeBy": "none"
           },
           {
@@ -105,11 +105,11 @@
             "summarizeBy": "none"
           },
           {
-            "name": "FuelSourceDescriptor",
+            "name": "FuelSource",
             "dataType": "string",
             "description": "Fuel source type (e.g. Black coal, Natural gas, Solar, Wind)",
-            "sourceColumn": "FuelSourceDescriptor",
-            "sourceLineageTag": "FuelSourceDescriptor",
+            "sourceColumn": "FuelSource",
+            "sourceLineageTag": "FuelSource",
             "summarizeBy": "none"
           },
           {
@@ -165,11 +165,11 @@
             "summarizeBy": "none"
           },
           {
-            "name": "time",
+            "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
-            "sourceColumn": "time",
-            "sourceLineageTag": "time",
+            "sourceColumn": "TimeHHMM",
+            "sourceLineageTag": "TimeHHMM",
             "summarizeBy": "none"
           },
           {
@@ -189,21 +189,21 @@
             "summarizeBy": "none"
           },
           {
-            "name": "mw",
+            "name": "MW",
             "dataType": "double",
             "description": "Power output in megawatts (MW) for this 5-minute interval",
             "formatString": "#,##0.00",
-            "sourceColumn": "mw",
-            "sourceLineageTag": "mw",
+            "sourceColumn": "MW",
+            "sourceLineageTag": "MW",
             "summarizeBy": "sum"
           },
           {
-            "name": "price",
+            "name": "Price",
             "dataType": "double",
             "description": "Regional reference price in AUD per megawatt-hour ($/MWh)",
             "formatString": "$#,##0.00",
-            "sourceColumn": "price",
-            "sourceLineageTag": "price",
+            "sourceColumn": "Price",
+            "sourceLineageTag": "Price",
             "summarizeBy": "none"
           },
           {
@@ -320,11 +320,11 @@
             "summarizeBy": "none"
           },
           {
-            "name": "time",
+            "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
-            "sourceColumn": "time",
-            "sourceLineageTag": "time",
+            "sourceColumn": "TimeHHMM",
+            "sourceLineageTag": "TimeHHMM",
             "summarizeBy": "none"
           },
           {
@@ -372,12 +372,12 @@
             "summarizeBy": "none"
           },
           {
-            "name": "price",
+            "name": "Price",
             "dataType": "double",
             "description": "Regional reference price in AUD per megawatt-hour ($/MWh)",
             "formatString": "$#,##0.00",
-            "sourceColumn": "price",
-            "sourceLineageTag": "price",
+            "sourceColumn": "Price",
+            "sourceLineageTag": "Price",
             "summarizeBy": "none"
           }
         ],
@@ -447,11 +447,11 @@
             "summarizeBy": "none"
           },
           {
-            "name": "time",
+            "name": "TimeHHMM",
             "dataType": "int64",
             "description": "Time of day as HHMM integer (e.g. 1430 = 2:30 PM)",
-            "sourceColumn": "time",
-            "sourceLineageTag": "time",
+            "sourceColumn": "TimeHHMM",
+            "sourceLineageTag": "TimeHHMM",
             "summarizeBy": "none"
           },
           {
@@ -471,19 +471,19 @@
             "summarizeBy": "none"
           },
           {
-            "name": "FromRegion",
+            "name": "FromRegionID",
             "dataType": "string",
             "description": "Region the flow is measured FROM",
-            "sourceColumn": "FromRegion",
-            "sourceLineageTag": "FromRegion",
+            "sourceColumn": "FromRegionID",
+            "sourceLineageTag": "FromRegionID",
             "summarizeBy": "none"
           },
           {
-            "name": "ToRegion",
+            "name": "ToRegionID",
             "dataType": "string",
             "description": "Region the flow is measured TO",
-            "sourceColumn": "ToRegion",
-            "sourceLineageTag": "ToRegion",
+            "sourceColumn": "ToRegionID",
+            "sourceLineageTag": "ToRegionID",
             "summarizeBy": "none"
           },
           {

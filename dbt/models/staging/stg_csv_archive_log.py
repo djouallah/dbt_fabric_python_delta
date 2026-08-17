@@ -1,8 +1,10 @@
 def model(dbt, session):
+    # table, not incremental: the log's real home is csv_archive_log.parquet in the LANDING
+    # lakehouse's Files/, which this model loads, appends to and saves. The Delta table it
+    # returns is a mirror of that parquet, so rebuilding it every run is correct and costs
+    # nothing. Downloads are still incremental — the parquet is the state, not this table.
     dbt.config(
-        materialized="incremental",
-        incremental_strategy="insert",
-        unique_key=["source_type", "source_filename"],
+        materialized="table",
         schema="landing",
     )
 

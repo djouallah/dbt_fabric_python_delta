@@ -10,9 +10,9 @@ async virtualization. Delta is read natively by Power BI Direct Lake.
 
 ![OneLake explorer showing the data lakehouse with mart schema tables and dbt project files](onelake.png)
 
-Concretely, for OneLake:
-- `ONELAKE_TABLES_PATH` = `abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/Tables`
-- `FILES_PATH` = `abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/Files`
+Concretely, for OneLake — note the **two different lakehouses**:
+- `ONELAKE_TABLES_PATH` = `abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{data_id}/Tables` — everything dbt builds
+- `FILES_PATH` = `abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{data_landing_id}/Files` — the raw AEMO archive
 - `TOKEN` = bearer token from `notebookutils.credentials.getToken('storage')` (in Fabric) or `az login --scope https://storage.azure.com/.default` (locally — `AzureCliCredential` picks it up automatically, no secrets to manage)
 
 Use the IDs, not the names. `deploy.py` holds the workspace GUID in its `WORKSPACE`
@@ -44,26 +44,36 @@ aemo_electricity:
 The adapter auto-creates a matching DuckDB Azure secret from the bearer token, enabling
 `delta_scan()` reads. Models persist to `<root_path>/<schema>/<model>` as Delta tables.
 
-### Incremental strategies
+### Materialization: every model is a table
 
-The pipeline is **file-level incremental** — each fact model reads only files it
-hasn't loaded yet and inserts them idempotently, keyed on the filename:
-
-| Strategy | Behavior | Used by |
-|----------|----------|---------|
-| `insert` | Insert only new keys (idempotent) | fact models (keyed on `file`), `stg_csv_archive_log` |
-| `insert` + overwrite | Intraday: insert new `(date,time,DUID)` rows (dup-safe, never updates); **overwrite** the whole table when a new **daily** file lands. The overwrite is decided by the **runner**, not the model — `full_refresh` is fixed at parse time, so both runners call the `check_new_daily` run-operation and only then rerun with `--full-refresh` | `fct_summary` |
-| `insert` (date-keyed) | Project a landing table into `mart`, skipping dates already present | `fct_region`, `fct_unit_dispatch`, `fct_interconnector_derived` |
-| `merge` | Upsert — update matched, insert new | `dim_duid` (attributes change; key `DUID`) |
-| `append` (one-off) | Built once; later runs select nothing (`WHERE 1=0`) → no-op | `dim_calendar` (fixed, generated) |
+There is no incremental anywhere — no `is_incremental()`, no `--full-refresh` branch, no
+new-daily probe. Every model rebuilds from the whole archive on every run, so both runners
+are a single `dbt run` and the DAG order is all the sequencing there is.
 
 ```sql
-{{ config(materialized='incremental', incremental_strategy='insert', unique_key='file') }}
+{{ config(materialized='table') }}
 ```
+
+Downloads are still incremental: `stg_csv_archive_log` fetches at most `download_limit` new
+files per run and records them in `csv_archive_log.parquet` under the landing lakehouse's
+`Files/`. That parquet is the state — not a Delta table — which is what lets every model
+downstream be a plain rebuild.
+
+### Column naming convention
+
+1. A column referencing an entity carries that entity's key name, role-prefixed when there is
+   more than one: `RegionID`, `FromRegionID`, `ToRegionID`.
+2. A mart column is named for the ontology property it binds to, so every binding in
+   `ontology.yaml` is an identity map.
+3. Landing tables keep AEMO's names verbatim — `fct_price` is AEMO's DREGION record and
+   `fct_scada` its DUNIT record.
 
 ## Schema layout
 
-- **`landing`** — staging and incremental fact tables (source ingestion, deduplication):
+Both schemas live in the **`data`** lakehouse; the raw CSVs they read live in
+**`data_landing`**, which holds no tables at all.
+
+- **`landing`** — the raw AEMO records, parsed from CSV, column names untouched:
   `fct_scada` (AEMO `DUNIT`, all 49 columns), `fct_price` (AEMO `DREGION`, all 126 columns —
   demand and net interchange live here, not just price), `fct_scada_today`, `fct_price_today`,
   `fct_interconnector_today`, `fct_constraint_today`
@@ -185,8 +195,9 @@ deploy, and nothing in the ontology or data agent binds to the model.
 - **Emit `timestamptz`, not `timestamp`.** Naive `TIMESTAMP` maps to Delta `timestamp_ntz`,
   which Microsoft docs flag as "not fully supported across Fabric workloads."
   `CAST(... AS TIMESTAMPTZ)` at output columns.
-- **Insert by filename.** Facts are loaded one file at a time and never reprocessed, so
-  `incremental_strategy='insert'` keyed on `file` is the right idempotent fit — not a
-  grain-level `merge`. Reserve `merge` for dimensions whose attributes actually change
-  (`dim_duid`), and a plain `table` for fixed generated ones (`dim_calendar`).
+- **Incremental was not worth its complexity here.** File-level incremental loading bought a
+  faster run and cost a `check_new_daily` probe, a `--full-refresh` branch in both runners, a
+  `LIMIT process_limit` that silently truncated a full build, and `{{ this }}`-dependent
+  fallbacks that break on a first run. A full rebuild from the archive is slower and has none
+  of those failure modes. Reach for incremental when the rebuild genuinely stops fitting.
 - **Delta maintenance is on you.** Compaction (`OPTIMIZE`) and `VACUUM` via delta-rs.

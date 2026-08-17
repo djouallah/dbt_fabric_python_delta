@@ -11,7 +11,7 @@
 SELECT
   StationName,
   first(Participant)   AS Participant,
-  first(Region)        AS Region,
+  first(RegionID)      AS RegionID,
   count(DISTINCT Participant) AS ParticipantCount,
   count(*)             AS UnitCount,
   count(*) FILTER (WHERE DispatchType = 'Generating Unit')   AS GeneratingUnitCount,

@@ -16,21 +16,18 @@
      Reads the Delta table, not CSVs, so there is no archive pre_hook: the incremental filter
      is by date instead of by file. Small table -- ~288 intervals x 5 regions x history. --#}
 {{ config(
-    materialized='incremental',
-    incremental_strategy='insert',
-    unique_key=['date', 'time', 'RegionID'],
-    partition_by=['month_key'],
+    materialized='table',
     schema='mart'
 ) }}
 
 WITH region_dispatch AS (
   SELECT
     p.DATE AS date,
-    CAST(strftime(p.SETTLEMENTDATE, '%H%M') AS INT) AS time,
+    CAST(strftime(p.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
     p.REGIONID AS RegionID,
     -- MAX collapses the residual duplicates left by multiple runnos/files for one interval,
     -- the same dedup fct_summary relies on.
-    MAX(p.RRP)                    AS price,
+    MAX(p.RRP)                    AS Price,
     MAX(p.TOTALDEMAND)            AS TotalDemand,
     MAX(p.DEMANDFORECAST)         AS DemandForecast,
     MAX(p.DISPATCHABLEGENERATION) AS DispatchableGeneration,
@@ -48,22 +45,19 @@ WITH region_dispatch AS (
     MAX(p.month_key)              AS month_key
   FROM {{ ref('fct_price') }} p
   WHERE p.INTERVENTION = 0
-  {%- if is_incremental() %}
-    AND p.DATE NOT IN (SELECT DISTINCT date FROM {{ this }})
-  {%- endif %}
   GROUP BY ALL
 )
 
 SELECT
   date,
-  time,
+  TimeHHMM,
   RegionID,
   -- ISO date as a string: ontology entity KEY parts may only be String/Integer, so any
   -- future entity keyed on this table needs DateKey rather than DATE.
   CAST(date AS VARCHAR) AS DateKey,
   -- DOUBLE, never DECIMAL(p,s): a parameterised decimal binds to a String ontology property
   -- and ingests as silent NULL against a Double property.
-  CAST(price                  AS DOUBLE) AS price,
+  CAST(Price                  AS DOUBLE) AS Price,
   CAST(TotalDemand            AS DOUBLE) AS TotalDemand,
   CAST(DemandForecast         AS DOUBLE) AS DemandForecast,
   CAST(DispatchableGeneration AS DOUBLE) AS DispatchableGeneration,

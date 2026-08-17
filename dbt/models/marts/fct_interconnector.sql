@@ -3,7 +3,7 @@
      MWFLOW is the dispatch target, METEREDMWFLOW what actually flowed. EXPORTLIMIT /
      IMPORTLIMIT are the binding transfer limits for that interval -- the numbers that had to
      be quoted from outside knowledge before this model existed. Direction is defined by
-     dim_interconnector: positive MWFLOW is FromRegion -> ToRegion.
+     dim_interconnector: positive MWFLOW is FromRegionID -> ToRegionID.
 
      Consistency check that falls out for free: DISPATCHIS carries 6 INTERCONNECTORRES rows
      per interval and dim_interconnector has 7 rows, of which PEC (EnergyConnect) is
@@ -12,17 +12,14 @@
      HISTORY: intraday only, ~2-day rolling window -- see fct_interconnector_today. Use
      fct_interconnector_derived for the full history at region-pair grain. --#}
 {{ config(
-    materialized='incremental',
-    incremental_strategy='insert',
-    unique_key=['date', 'time', 'InterconnectorID'],
-    partition_by=['date'],
+    materialized='table',
     schema='mart'
 ) }}
 
 WITH flows AS (
   SELECT
     i.DATE AS date,
-    CAST(strftime(i.SETTLEMENTDATE, '%H%M') AS INT) AS time,
+    CAST(strftime(i.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
     i.INTERCONNECTORID AS InterconnectorID,
     MAX(i.MWFLOW)          AS MWFlow,
     MAX(i.METEREDMWFLOW)   AS MeteredMWFlow,
@@ -36,20 +33,17 @@ WITH flows AS (
     MAX(i.FCASIMPORTLIMIT) AS FcasImportLimit
   FROM {{ ref('fct_interconnector_today') }} i
   WHERE i.INTERVENTION = 0
-  {%- if is_incremental() %}
-    AND i.DATE >= (SELECT COALESCE(MAX(date), CAST('1900-01-01' AS DATE)) FROM {{ this }})
-  {%- endif %}
   GROUP BY ALL
 )
 
 SELECT
   f.date,
-  f.time,
+  f.TimeHHMM,
   f.InterconnectorID,
   CAST(f.date AS VARCHAR) AS DateKey,
   d.Name,
-  d.FromRegion,
-  d.ToRegion,
+  d.FromRegionID,
+  d.ToRegionID,
   d.AcDc,
   d.InService,
   -- DOUBLE, never DECIMAL(p,s): see fct_region.

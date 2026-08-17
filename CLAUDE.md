@@ -83,10 +83,10 @@ the exchange and propagates the failure instead of swallowing it.
 
 ## Config lives in deploy.py
 
-There is no `deploy_config.yml`. `WORKSPACE`, `LAKEHOUSE`, `FOLDER`, `SCHEDULE_EVERY`,
-`DOWNLOAD_LIMIT`, `PROCESS_LIMIT` are constants at the top of `deploy.py`. The workflow repeats
-`WS_ID` / `LH_NAME` in its own `env:` block (deploy.py is a flat script, so importing it to read
-the constants would run a deploy) — **keep the two in sync**.
+There is no `deploy_config.yml`. `WORKSPACE`, `LAKEHOUSE`, `LAKEHOUSE_LANDING`, `FOLDER`,
+`SCHEDULE_EVERY`, `DOWNLOAD_LIMIT` are constants at the top of `deploy.py`. The workflow repeats
+`WS_ID` / `LH_NAME` / `LH_LANDING` in its own `env:` block (deploy.py is a flat script, so
+importing it to read the constants would run a deploy) — **keep the two in sync**.
 
 ## Delta writes via the duckrun dbt adapter
 
@@ -102,35 +102,72 @@ virtualization.
   at every seam a root enters (profile `root_path`, `duckrun.connect`, source `location`). The full
   abfss URL still works and means the same thing.
   - Anything that pastes a path into **raw SQL** never goes through the expander, so it must use an
-    already-expanded value: `check_new_daily.sql` uses `target.root_path` (the adapter surfaces the
-    expanded root on the Jinja `target`), and `FILES_PATH` stays a **full abfss URL** because
-    `sources.yml` / `stg_csv_archive_log.py` feed it to `read_csv_auto` / `read_parquet` directly.
+    already-expanded value. `FILES_PATH` therefore stays a **full abfss URL** — the landing
+    pre_hooks and `stg_csv_archive_log.py` feed it to `read_csv` / `read_parquet` directly.
   - Shipped in duckrun **0.4.27**; CI installs plain `duckrun` from PyPI.
 - **Models persist** to `<root_path>/<schema>/<model>` as Delta tables, readable by
   Power BI Direct Lake immediately (no async metadata generation delay).
-- **Incremental strategies** are real Delta operations: `merge` (upsert, needs
-  `unique_key`), `insert` (idempotent append of new keys), `append`. This pipeline is
-  **file-level incremental**: each fact model reads only files not already loaded
-  (`... NOT IN (SELECT file FROM {{ this }})`) and writes with `incremental_strategy='insert'`
-  keyed on the **filename** — idempotent, re-running a file is a no-op. `dim_duid` uses
-  `merge` (a dimension whose attributes change; source is unique on `DUID`).
-  `dim_calendar` is a one-off: `incremental`/`append` with `{% if is_incremental() %}WHERE 1=0{% endif %}`,
-  so it builds in full on the first run and is a no-op afterward (dbt's "create if not exists, else skip").
-  `fct_summary` uses `incremental_strategy='insert'` on `['date','time','DUID']` (dup-safe,
-  insert-only — never blind `append`, never updates a key) for intraday rows, and
-  **overwrite** when a new **daily** file arrives. **The overwrite is decided by the RUNNER,
-  not the model** — `full_refresh` is fixed at parse time (`execute=False`) so a run-time
-  probe cannot toggle it, and the old `has_new_daily`/`config(full_refresh=…)` trick was
-  always pinned to overwrite. Both runners (the notebook and CI) call the `check_new_daily`
-  run-operation first, which raises `NEW_DAILY_PENDING`, and only then rerun
-  `dbt run --select fct_summary+ --full-refresh`. duckrun has NO `overwrite` incremental
-  strategy — overwrite IS `full_refresh`.
-  `check_new_daily` **hardcodes the `landing/fct_scada` path** in raw SQL (raw SQL bypasses
-  duckrun's shorthand expander, so it uses `target.root_path`); renaming or moving that table
-  means editing the macro in lockstep.
-  Do NOT use a `DELETE FROM`/`TRUNCATE` pre_hook (`{{ this }}` is a `delta_scan` view, not
-  writable), and do NOT switch to `materialized='table'` (that overwrites every run and
-  loses the intraday-append optimization).
+
+## Two lakehouses, and NO incremental
+
+**`data_landing` holds the raw AEMO archive; `data` holds every Delta table dbt builds.**
+`data_landing` is the ORIGINAL `data` lakehouse, renamed by hand — same GUID — so anything
+still pointing at `6bd45441-…` is pointing at the archive, not the mart. It contains
+`Files/csv/**` (~1,060 gzipped CSVs) plus `csv_archive_log.parquet`, **no Tables**, and is
+never written by dbt's Tables output. It is NOT created by `deploy.py` or CI: both check it
+exists and fail loudly if it doesn't, because silently provisioning an empty one would
+re-download eight years of CSVs.
+
+The split is two env vars pointing at two lakehouses — nothing more:
+
+| var | lakehouse | form |
+| --- | --- | --- |
+| `ONELAKE_TABLES_PATH` | `data` | shorthand in CI, full abfss in the notebook |
+| `FILES_PATH` | `data_landing` | always a full abfss URL |
+
+There is **no OneLake shortcut and no `sources.yml` with `location:`**. dbt keeps ONE
+`root_path`, so every `ref()` resolves inside one lakehouse and no model crosses — only the
+raw `read_csv` paths point elsewhere, and those were already absolute strings. The dbt project
+itself (`Files/dbt`) lives in `data`, which is the lakehouse the notebook mounts.
+
+**Every model is `materialized='table'`. There is no `is_incremental()` anywhere.** The data
+was deleted and rebuilt from scratch, and incremental had nothing left to preserve. What went
+with it, so nobody reintroduces it piecemeal:
+
+- `dbt/macros/check_new_daily.sql`, the `NEW_DAILY_PENDING` signal, and the `--full-refresh`
+  branch in both runners. **CI Phase 2 and the notebook are now a single `dbt run`** — the DAG
+  order is all the sequencing there is.
+- The `full_refresh` workflow input and `PROCESS_LIMIT`/`process_limit` everywhere. That limit
+  was a `LIMIT n` inside each landing pre_hook; under a full rebuild it silently TRUNCATES the
+  build to n files, which is why it had to go rather than being raised.
+- The `has_files` / `has_new_duids` probes and their `SELECT * FROM {{ this }} WHERE FALSE`
+  fallbacks — a table model has no `{{ this }}` on the first run, so those were actively unsafe.
+- `dim_duid`'s `DESCRIBE`-based schema-drift probe, and `dim_calendar`'s
+  `{% if is_incremental() %}WHERE 1=0{% endif %}` idiom.
+- `fct_summary` was two queries joined by `{% if is_incremental() %}`; it is now just the
+  full-rebuild branch, and the `cutoff` watermark column that existed only to serve the append
+  path is gone.
+
+`download_limit` **stays** — it caps how many NEW files to fetch per run. Downloads are still
+incremental, but the state is `csv_archive_log.parquet` in `Files/`, not a Delta table, which
+is also why `stg_csv_archive_log` can be a plain `table` model.
+
+## Column naming convention
+
+1. **A column referencing an entity carries that entity's key name**, role-prefixed when there
+   is more than one: `RegionID`, `FromRegionID`, `ToRegionID`.
+2. **A mart column is named for the ontology property it binds to**, so every binding in
+   `ontology.yaml` is an identity map (`MW: [MW, Double]`). The four genuine foreign keys are
+   the only non-identity binds left, and they now read as what they are —
+   `[[FromRegionID, RegionID]]`.
+3. **Landing tables keep AEMO's names verbatim.** `fct_price` is AEMO's DREGION record and
+   `fct_scada` its DUNIT record; renaming those would break the tie to AEMO's spec.
+
+Applied renames: `time`→`TimeHHMM`, `mw`→`MW`, `price`→`Price`,
+`FuelSourceDescriptor`→`FuelSource`, `TechnologyType`→`Technology`, `Region`→`RegionID`
+(in `dim_duid`/`dim_station`), `FromRegion`/`ToRegion`→`FromRegionID`/`ToRegionID`. The
+matching **ontology properties** moved too, so `model.bim`, `ontology.yaml`, `data_agent.py`'s
+schema map and the `u.RegionID` filters in `gql.py`/`shutdown.py` all changed in lockstep.
 - **The landing tables were always complete; the mart layer was the bottleneck.**
   `fct_price` is not a price table — it is AEMO's **DREGION** record, all 126 source columns
   ingested, including `TOTALDEMAND`, `NETINTERCHANGE`, `DISPATCHABLEGENERATION/LOAD` and
@@ -199,9 +236,9 @@ virtualization.
   property you name, and the failure mode reads like a broken binding rather than a syntax
   error. (History: an earlier version renamed the `time` column to `Interval` specifically
   to dodge `TIME` being reserved, and landed on another reserved word.)
-- **`fct_summary.time` (and so `Observation.Interval`) is HHMM, not minutes past midnight.**
+- **`fct_summary.TimeHHMM` (and so `Observation.TimeHHMM`) is HHMM, not minutes past midnight.**
   `CAST(strftime(SETTLEMENTDATE, '%H%M') AS INT)` → `0, 5, … 55, 100, 105, … 2355`; min 0,
-  max 2355, 288 distinct. Decode as `hour = time / 100`, `minute = time % 100`. The values
+  max 2355, 288 distinct. Decode as `hour = TimeHHMM / 100`, `minute = TimeHHMM % 100`. The values
   are deliberately **not** evenly spaced (nothing between 55 and 100), so never treat it as
   a duration — but it does compare numerically, so a clock window is a plain
   `BETWEEN 1800 AND 2000`. An earlier note here claimed minutes-past-midnight; that was
@@ -219,7 +256,7 @@ virtualization.
   binds multiple key-ref columns: 49,245 UnitDay nodes keyed `[DUID, DateKey]` ingested
   with a two-column `PRODUCED` edge that traverses correctly (58,231.4 MWh test query
   matches v1/SQL exactly). Property names may also repeat across entity types when the
-  value type matches (`Unit.Region` and `Station.Region` are both plain `Region`). So
+  value type matches (`GeneratingUnit.RegionID` and `Station.RegionID` are both plain `RegionID`). So
   v1's concatenated `UnitDayKey` surrogate and global name prefixing were both
   unnecessary. Still true: key parts are String/Integer only — a date in the key must be
   an ISO string (`DateKey`), and a brand-new graph answers `GraphNotQueryable` (HTTP 400)

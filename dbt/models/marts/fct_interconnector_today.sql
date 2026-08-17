@@ -13,30 +13,10 @@
      publishing, not a bug here. For full-history flows see fct_interconnector_derived, which
      solves the network from fct_region.NetInterchange. --#}
 {{ config(
-    materialized='incremental',
-    incremental_strategy='append',
-    partition_by=['DATE'],
-    pre_hook="SET VARIABLE interconnector_today_paths = (SELECT COALESCE(NULLIF(list('{{ get_csv_archive_path() }}' || archive_path), []), ['']) FROM (SELECT archive_path FROM {{ ref('stg_csv_archive_log') }} WHERE source_type = 'price_today'{% if is_incremental() %} AND csv_filename NOT IN (SELECT DISTINCT file FROM {{ this }}){% endif %} LIMIT {{ env_var('process_limit', '1000') }}))"
+    materialized='table',
+    pre_hook="SET VARIABLE interconnector_today_paths = (SELECT COALESCE(NULLIF(list('{{ get_csv_archive_path() }}' || archive_path), []), ['']) FROM (SELECT archive_path FROM {{ ref('stg_csv_archive_log') }} WHERE source_type = 'price_today'))"
 ) }}
 
-{#-- Skip the file read entirely when no new price_today files have arrived: otherwise the
-     pre_hook's COALESCE(..., ['']) sentinel makes read_csv('') run against an empty path. --#}
-{%- set check_files_query -%}
-SELECT COUNT(*) as cnt FROM {{ ref('stg_csv_archive_log') }}
-WHERE source_type = 'price_today'
-{%- if is_incremental() %}
-AND csv_filename NOT IN (SELECT DISTINCT file FROM {{ this }})
-{%- endif -%}
-{%- endset -%}
-
-{%- if execute and flags.WHICH == 'run' -%}
-  {%- set files_result = run_query(check_files_query) -%}
-  {%- set has_files = files_result and files_result.rows[0][0] > 0 -%}
-{%- else -%}
-  {%- set has_files = true -%}
-{%- endif -%}
-
-{% if has_files %}
 WITH interconnector_staging AS (
   SELECT *
   FROM read_csv(
@@ -107,6 +87,3 @@ SELECT
   CAST(SETTLEMENTDATE AS DATE) AS DATE,
   CAST(YEAR(CAST(SETTLEMENTDATE AS TIMESTAMP)) AS INT) AS YEAR
 FROM interconnector_staging
-{% else %}
-SELECT * FROM {{ this }} WHERE FALSE
-{% endif %}

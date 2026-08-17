@@ -63,7 +63,7 @@ entities:
     keys: [StationName]
     properties:
       StationName:            [StationName,            String]
-      Region:                 [Region,                 String]
+      RegionID:               [RegionID,               String]
       UnitCount:              [UnitCount,              BigInt]
       GeneratingUnitCount:    [GeneratingUnitCount,    BigInt]
       LoadUnitCount:          [LoadUnitCount,          BigInt]
@@ -76,10 +76,10 @@ entities:
     keys: [DUID]
     properties:
       DUID:         [DUID,                 String]
-      Region:       [Region,               String]
-      FuelSource:   [FuelSourceDescriptor, String]
+      RegionID:     [RegionID,             String]
+      FuelSource:   [FuelSource,           String]
       DispatchType: [DispatchType,         String]
-      Technology:   [TechnologyType,       String]
+      Technology:   [Technology,           String]
       RegCapMW:     [RegCapMW,             Double]
       StationName:  [StationName,          String]
 
@@ -91,10 +91,10 @@ entities:
     properties:
       DUID:     [DUID,     String]
       DateKey:  [DateKey,  String]
-      TimeHHMM: [time,     BigInt]
+      TimeHHMM: [TimeHHMM, BigInt]
       RegionID: [RegionID, String]
-      MW:       [mw,       Double]
-      Price:    [price,    Double]
+      MW:       [MW,       Double]
+      Price:    [Price,    Double]
 
   # NEW in v5. The regional truth: one row per region per interval. Price here is THE
   # regional spot price -- one value, not the same number copied onto 60 units.
@@ -105,8 +105,8 @@ entities:
     properties:
       RegionID:               [RegionID,               String]
       DateKey:                [DateKey,                String]
-      TimeHHMM:               [time,                   BigInt]
-      Price:                  [price,                  Double]
+      TimeHHMM:               [TimeHHMM,               BigInt]
+      Price:                  [Price,                  Double]
       TotalDemand:            [TotalDemand,            Double]
       NetInterchange:         [NetInterchange,         Double]
       AvailableGeneration:    [AvailableGeneration,    Double]
@@ -121,10 +121,10 @@ entities:
     properties:
       LinkID:        [LinkID,        String]
       DateKey:       [DateKey,       String]
-      TimeHHMM:      [time,          BigInt]
+      TimeHHMM:      [TimeHHMM,      BigInt]
       LinkName:      [LinkName,      String]
-      FromRegion:    [FromRegion,    String]
-      ToRegion:      [ToRegion,      String]
+      FromRegionID:  [FromRegionID,  String]
+      ToRegionID:    [ToRegionID,    String]
       FlowMW:        [FlowMW,        Double]
       NetworkLossMW: [NetworkLossMW, Double]
 
@@ -166,7 +166,7 @@ relationships:
     to: Region
     table: dim_station
     from_bind: [[StationName, StationName]]
-    to_bind:   [[Region,      RegionID]]
+    to_bind:   [[RegionID,    RegionID]]
 
   # CONNECTS_FROM / CONNECTS_TO record the direction in the source data, but an interconnector
   # physically carries power BOTH ways -- traverse them as a union, never one alone.
@@ -175,21 +175,21 @@ relationships:
     to: Region
     table: dim_interconnector
     from_bind: [[InterconnectorID, InterconnectorID]]
-    to_bind:   [[FromRegion,       RegionID]]
+    to_bind:   [[FromRegionID,     RegionID]]
 
   - name: CONNECTS_TO
     from: Interconnector
     to: Region
     table: dim_interconnector
     from_bind: [[InterconnectorID, InterconnectorID]]
-    to_bind:   [[ToRegion,         RegionID]]
+    to_bind:   [[ToRegionID,       RegionID]]
 
   - name: PRODUCED
     from: GeneratingUnit
     to: Observation
     table: fct_summary
     from_bind: [[DUID, DUID]]
-    to_bind:   [[DUID, DUID], [DateKey, DateKey], [time, TimeHHMM]]
+    to_bind:   [[DUID, DUID], [DateKey, DateKey], [TimeHHMM, TimeHHMM]]
 
   # A region's own dispatch outcome, interval by interval.
   - name: OBSERVED
@@ -197,19 +197,19 @@ relationships:
     to: RegionInterval
     table: fct_region
     from_bind: [[RegionID, RegionID]]
-    to_bind:   [[RegionID, RegionID], [DateKey, DateKey], [time, TimeHHMM]]
+    to_bind:   [[RegionID, RegionID], [DateKey, DateKey], [TimeHHMM, TimeHHMM]]
 
   # Both ends of each corridor flow, so reachability and transfer questions traverse.
   - name: FLOW_FROM
     from: Flow
     to: Region
     table: fct_interconnector_derived
-    from_bind: [[LinkID, LinkID], [DateKey, DateKey], [time, TimeHHMM]]
-    to_bind:   [[FromRegion, RegionID]]
+    from_bind: [[LinkID, LinkID], [DateKey, DateKey], [TimeHHMM, TimeHHMM]]
+    to_bind:   [[FromRegionID, RegionID]]
 
   - name: FLOW_TO
     from: Flow
     to: Region
     table: fct_interconnector_derived
-    from_bind: [[LinkID, LinkID], [DateKey, DateKey], [time, TimeHHMM]]
-    to_bind:   [[ToRegion, RegionID]]
+    from_bind: [[LinkID, LinkID], [DateKey, DateKey], [TimeHHMM, TimeHHMM]]
+    to_bind:   [[ToRegionID, RegionID]]

@@ -27,17 +27,17 @@
 WITH interval_residual AS (
   SELECT
     date,
-    time,
+    TimeHHMM,
     SUM(NetInterchange) AS residual
   FROM {{ ref('fct_region') }}
   WHERE RegionID IN ('NSW1', 'QLD1', 'SA1', 'TAS1', 'VIC1')
-  GROUP BY date, time
+  GROUP BY date, TimeHHMM
 )
 
 -- Structural break: an interval far outside the measured noise floor.
 SELECT
   'interval_residual_far_negative' AS check_name,
-  CAST(date AS VARCHAR) || ' ' || CAST(time AS VARCHAR) AS detail,
+  CAST(date AS VARCHAR) || ' ' || CAST(TimeHHMM AS VARCHAR) AS detail,
   ROUND(residual, 1) AS value_mw
 FROM interval_residual
 WHERE residual < -50

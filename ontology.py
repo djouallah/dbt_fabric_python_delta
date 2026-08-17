@@ -86,7 +86,14 @@ def part(path, obj):
 
 
 ws = duckrun.workspace(WORKSPACE)
-lh = next(l for l in ws.list_lakehouses() if l["displayName"] == LAKEHOUSE)
+lakehouses = ws.list_lakehouses()
+lh = next((l for l in lakehouses if l["displayName"] == LAKEHOUSE), None)
+if not lh:
+    # Explicit rather than a bare StopIteration: this is the normal state before the first
+    # deploy, and the useful signal is "run deploy.py", not a traceback. The TRANSFORM
+    # lakehouse is meant here -- the ontology binds mart tables, never the raw archive.
+    raise SystemExit(f"lakehouse '{LAKEHOUSE}' not found — run deploy.py first. "
+                     f"Found: {[l['displayName'] for l in lakehouses] or 'none'}")
 source_table = {"sourceType": "LakehouseTable", "workspaceId": WORKSPACE,
                 "itemId": lh["id"], "sourceSchema": SCHEMA}
 

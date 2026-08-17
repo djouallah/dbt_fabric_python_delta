@@ -1,12 +1,9 @@
 {{ config(
-    materialized='incremental',
-    incremental_strategy='insert',
-    unique_key='date'
+    materialized='table'
 ) }}
 
--- One-off, fixed calendar dimension. Built in full on the first run; once the table
--- exists, every later run selects nothing (WHERE 1=0) so it's a no-op — dbt's idiom
--- for "create if not exists, otherwise skip".
+-- Fixed calendar dimension, rebuilt every run. It is a generate_series over ~3,200 days —
+-- cheaper to rebuild than to reason about.
 SELECT
   CAST(date AS DATE) as date,
   CAST(EXTRACT(year FROM date) AS INT) as year,
@@ -18,6 +15,3 @@ FROM (
     INTERVAL 1 DAY
   )) as date
 )
-{% if is_incremental() %}
-WHERE 1 = 0
-{% endif %}

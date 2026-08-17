@@ -57,10 +57,10 @@ Entity types and their properties:
 - Interconnector(InterconnectorID: String key, Name: String, AcDc: String, InService: Boolean)
 - Participant(Participant: String key, ParentParticipant: String, IsCurated: Boolean,
   IsRegisteredParticipant: Boolean)
-- Station(StationName: String key, Region: String, UnitCount: BigInt,
+- Station(StationName: String key, RegionID: String, UnitCount: BigInt,
   GeneratingUnitCount: BigInt, LoadUnitCount: BigInt, BidirectionalUnitCount: BigInt,
   RegCapMW: Double)
-- GeneratingUnit(DUID: String key, Region: String, FuelSource: String, DispatchType: String,
+- GeneratingUnit(DUID: String key, RegionID: String, FuelSource: String, DispatchType: String,
   Technology: String, RegCapMW: Double, StationName: String)
 - Observation(DUID: String, DateKey: String, TimeHHMM: BigInt -- these three together are
   the key; RegionID: String, MW: Double, Price: Double)
@@ -70,7 +70,7 @@ Entity types and their properties:
   AvailableGeneration: Double, DispatchableGeneration: Double)
   One row per REGION per 5-minute interval. ~373 thousand nodes.
 - Flow(LinkID: String, DateKey: String, TimeHHMM: BigInt -- these three together are the key;
-  LinkName: String, FromRegion: String, ToRegion: String, FlowMW: Double,
+  LinkName: String, FromRegionID: String, ToRegionID: String, FlowMW: Double,
   NetworkLossMW: Double)
   One row per region-PAIR per 5-minute interval. ~298 thousand nodes.
   LinkID is one of 'QLD1-NSW1', 'VIC1-NSW1', 'SA1-VIC1', 'TAS1-VIC1'.
@@ -140,7 +140,7 @@ question allows -- they are faster and far less error-prone.
    A missing date filter is the most common cause of a failed or hanging query.
    RegionInterval and Flow are small enough to scan a month without one, but a date filter
    is still good practice.
-8. To filter units by region, use the GeneratingUnit's OWN property: WHERE u.Region = 'SA1'.
+8. To filter units by region, use the GeneratingUnit's OWN property: WHERE u.RegionID = 'SA1'.
    Observation also carries RegionID directly, so WHERE o.RegionID = 'SA1' works without any
    join at all. Do NOT traverse (u)-[:PART_OF]->(s:Station)-[:LOCATED_IN]->(r:Region) just to
    get a region -- it is slower and adds nothing. Traverse to Station only when the question
@@ -222,7 +222,7 @@ question allows -- they are faster and far less error-prone.
   Getting this backwards inverts every trade answer.
 - AvailableGeneration is the capacity generators OFFERED for that interval. Spare capacity
   ("reserve", "headroom") is AvailableGeneration - TotalDemand, from RegionInterval.
-- Flow.FlowMW is positive in the FromRegion -> ToRegion direction and negative the other
+- Flow.FlowMW is positive in the FromRegionID -> ToRegionID direction and negative the other
   way. LinkID 'TAS1-VIC1' with FlowMW = -300 means 300 MW flowing VIC1 -> TAS1.
   Flow is region-PAIR grain: 'QLD1-NSW1' covers QNI and Terranora together and they cannot
   be separated. NetworkLossMW is the whole-NEM transmission loss for that interval, repeated
@@ -335,7 +335,7 @@ RETURN i.InterconnectorID, i.Name
 Q: Which participants would a Basslink outage cut off from the mainland? (the participants
    operating in the islanded region -- answer: 5)
 MATCH (u:GeneratingUnit)-[:OPERATED_BY]->(p:Participant)
-WHERE u.Region = 'TAS1'
+WHERE u.RegionID = 'TAS1'
 RETURN DISTINCT p.Participant
 
 Q: Which stations have both a generating and a load unit, and who owns them?

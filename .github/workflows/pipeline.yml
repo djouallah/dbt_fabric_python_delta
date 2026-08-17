@@ -9,10 +9,6 @@ on:
         type: choice
         options: [none, no_model, full]
         default: none
-      full_refresh:
-        description: "Force fct_summary+ --full-refresh (needed after a schema change when no new daily file would trigger the rebuild path)"
-        type: boolean
-        default: false
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -33,18 +29,23 @@ env:
   # assertion — no azure/login, no token step. Needs `id-token: write` (set above).
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  # Keep in sync with deploy.py's WORKSPACE / LAKEHOUSE / FOLDER (deploy.py is a flat
-  # script, so importing it to read the constants would run a deploy). FOLDER matters here
-  # too: Phase 1 runs on EVERY run and is what actually creates the lakehouse, and duckrun
-  # only places an item in a folder when it CREATES it — so if this call omitted the
-  # folder the lakehouse would land at the workspace root and deploy.py could never move it.
+  # Keep in sync with deploy.py's WORKSPACE / LAKEHOUSE / LAKEHOUSE_LANDING / FOLDER
+  # (deploy.py is a flat script, so importing it to read the constants would run a deploy).
+  # FOLDER matters here too: Phase 1 runs on EVERY run and is what actually creates the
+  # lakehouse, and duckrun only places an item in a folder when it CREATES it — so if this
+  # call omitted the folder the lakehouse would land at the workspace root and deploy.py
+  # could never move it.
   WS_ID: 91588e42-0f1c-4e56-bcaa-cbf015b8f312
+  # Two lakehouses. LH_LANDING holds the raw AEMO archive under Files/ and is NEVER written
+  # by dbt's Tables output — it outlives every run and is not created here. LH_NAME holds
+  # every Delta table dbt builds, plus the dbt project itself under Files/dbt.
   LH_NAME: data
+  LH_LANDING: data_landing
   FOLDER: aemo
-  # CI's own dbt run only — deliberately smaller than the limits deploy.py injects into
-  # the variable library for the in-Fabric notebook run.
+  # CI's own dbt run only — deliberately smaller than the limit deploy.py injects into the
+  # variable library for the in-Fabric notebook run. Caps NEW downloads per run; there is no
+  # process limit any more (every model rebuilds from the full archive).
   CI_DOWNLOAD_LIMIT: "6"
-  CI_PROCESS_LIMIT: "2"
 
 jobs:
   pipeline:
@@ -71,21 +72,32 @@ jobs:
           python - <<EOF >> "$GITHUB_ENV"
           import os, duckrun
           ws_id, lh_name = os.environ["WS_ID"], os.environ["LH_NAME"]
+          landing = os.environ["LH_LANDING"]
           ws = duckrun.workspace(ws_id)
-          existed = lh_name in [l["displayName"] for l in ws.list_lakehouses()]
+          names = [l["displayName"] for l in ws.list_lakehouses()]
+          existed = lh_name in names
           lh_id = ws.create_lakehouse(lh_name, folder=os.environ["FOLDER"])   # idempotent, schema-enabled
-          base = f"abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}"
+          # The landing lakehouse is NOT created here: it holds the downloaded AEMO archive and
+          # outlives every run. Failing loudly beats silently provisioning an empty one and then
+          # re-downloading eight years of CSVs into it.
+          if landing not in names:
+              raise SystemExit(f"landing lakehouse '{landing}' not found in {names}")
+          landing_id = next(l["id"] for l in ws.list_lakehouses() if l["displayName"] == landing)
           # Tables path travels as the OneLake shorthand `<workspace>/<item>.Lakehouse`: duckrun
           # expands it wherever a root enters (profiles.yml root_path, duckrun.connect). FILES_PATH
-          # stays a full URL — sources.yml and stg_csv_archive_log.py paste it straight into
-          # read_csv_auto/read_parquet, which never see the expander.
+          # stays a full URL — stg_csv_archive_log.py and the read_csv macros paste it straight
+          # into read_csv/read_parquet, which never see the expander.
+          #
+          # THE TWO POINT AT DIFFERENT LAKEHOUSES. Tables -> the new lakehouse dbt builds into;
+          # Files -> the landing lakehouse holding the raw archive. dbt keeps ONE root_path, so
+          # every ref() still resolves inside one lakehouse and nothing crosses.
           print(f"ONELAKE_TABLES_PATH={ws.display_name}/{lh_name}.Lakehouse")
-          print(f"FILES_PATH={base}/Files")
+          print(f"FILES_PATH=abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{landing_id}/Files")
           print(f"WS_NAME={ws.display_name}")
           print(f"LH_ID={lh_id}")
+          print(f"LH_LANDING_ID={landing_id}")
           print(f"LH_ACTION={'already existed' if existed else 'just created'}")
           print(f"download_limit={os.environ['CI_DOWNLOAD_LIMIT']}")
-          print(f"process_limit={os.environ['CI_PROCESS_LIMIT']}")
           EOF
           echo "T_LAKEHOUSE=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
@@ -93,29 +105,12 @@ jobs:
         run: |
           T0=$(date +%s)
           DBT="--target dev --project-dir dbt --profiles-dir dbt"
-          # Same flow as the Fabric notebook.
-          # 1. Download / refresh the archive log first.
-          dbt run --select stg_csv_archive_log $DBT
-          # 2. New daily pending? check_new_daily exits non-zero (raises) when yes —
-          #    checked BEFORE fct_scada ingests it. `if` keeps set -e from aborting here.
-          if dbt run-operation check_new_daily $DBT; then NEW_DAILY=0; else NEW_DAILY=1; fi
-          echo "new_daily=$NEW_DAILY"
-          # 3. Build everything except the summary (retry once on failure).
-          #    No new daily landed -> the daily fct_price/fct_scada have nothing to do, so
-          #    exclude them entirely. Selecting them would still scan the full table just to
-          #    discover there's nothing new — this skips the node, zero work.
-          DAILY_EX=""; [ "$NEW_DAILY" = "0" ] && DAILY_EX="--exclude fct_price --exclude fct_scada"
-          dbt run --exclude stg_csv_archive_log --exclude fct_summary+ $DAILY_EX $DBT \
+          # Same flow as the Fabric notebook: ONE run. Every model is a table now, so the DAG
+          # order is all the sequencing there is — no check_new_daily probe, no --full-refresh
+          # branch, no per-model excludes. stg_csv_archive_log downloads new CSVs as a side
+          # effect and everything downstream rebuilds from the whole archive.
+          dbt run $DBT \
             || { echo "::warning::dbt run failed — retrying once..."; sleep 60; dbt retry $DBT; }
-          # 4. Summary: overwrite when a new daily landed, else append intraday. fct_summary
-          #    has no children today, so `fct_summary+` is just the model; the `+` stays so a
-          #    future downstream model is built HERE rather than in step 3, where being
-          #    downstream of fct_summary would make it aggregate the PREVIOUS run's data.
-          #    The new marts (fct_region, fct_unit_dispatch, fct_interconnector*,
-          #    fct_constraint) hang off fct_price/fct_scada, NOT fct_summary, so step 3 builds
-          #    them — correct, since they read the landing Delta tables rather than the CSVs.
-          FR=""; { [ "$NEW_DAILY" = "1" ] || [ "${{ inputs.full_refresh }}" = "true" ]; } && FR="--full-refresh"
-          dbt run --select fct_summary+ $FR $DBT
           cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
           echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 

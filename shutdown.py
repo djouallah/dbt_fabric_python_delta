@@ -81,7 +81,7 @@ for link in sorted(links, key=lambda l: l["name"]):
         print(f"{link['name']:<26} {'-- nothing --':<24}")
         continue
 
-    where_unit = " OR ".join(f"u.Region = '{r}'" for r in stranded)
+    where_unit = " OR ".join(f"u.RegionID = '{r}'" for r in stranded)
     cap = gql(f"MATCH (u:GeneratingUnit) WHERE {where_unit} "
               "RETURN sum(u.RegCapMW) AS mw")[0]["mw"]
     # The demand that gets islanded. Demand is instantaneous MW, so it is AVERAGED over the

@@ -80,12 +80,12 @@ models:
               field: DUID
               config:
                 tags: [heavy]
-      - name: mw
+      - name: MW
         tests:
           - not_null:
               config:
                 tags: [heavy]
-      - name: price
+      - name: Price
         tests:
           - not_null:
               config:
@@ -167,7 +167,7 @@ models:
               to: ref('dim_interconnector')
               field: InterconnectorID
       - name: MWFlow
-        description: Dispatch target flow, positive in the FromRegion -> ToRegion direction
+        description: Dispatch target flow, positive in the FromRegionID -> ToRegionID direction
 
   - name: fct_interconnector_derived
     description: >

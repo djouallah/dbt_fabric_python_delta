@@ -47,13 +47,13 @@ models:
         tests:
           - unique
           - not_null
-      - name: FromRegion
+      - name: FromRegionID
         tests:
           - not_null
           - relationships:
               to: ref('dim_region')
               field: RegionID
-      - name: ToRegion
+      - name: ToRegionID
         tests:
           - not_null
           - relationships:
@@ -100,7 +100,7 @@ models:
         tests:
           - unique
           - not_null
-      - name: Region
+      - name: RegionID
         tests:
           - relationships:
               to: ref('dim_region')

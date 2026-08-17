@@ -11,7 +11,7 @@
 -- binding, a reachability query — must filter on InService, otherwise SA1 gains a
 -- direct link to NSW1 that does not exist today and reachability answers go wrong.
 --
--- FromRegion/ToRegion follow AEMO's positive-flow convention. The link is physically
+-- FromRegionID/ToRegionID follow AEMO's positive-flow convention. The link is physically
 -- bidirectional; treat the pair as an undirected edge when traversing.
 SELECT * FROM (VALUES
     ('V-SA',       'Heywood',               'VIC1', 'SA1',  'AC', TRUE),
@@ -21,4 +21,4 @@ SELECT * FROM (VALUES
     ('NSW1-QLD1',  'QNI',                   'NSW1', 'QLD1', 'AC', TRUE),
     ('N-Q-MNSP1',  'Terranora (Directlink)', 'NSW1', 'QLD1', 'DC', TRUE),
     ('PEC',        'EnergyConnect',         'SA1',  'NSW1', 'AC', FALSE)
-) AS t(InterconnectorID, Name, FromRegion, ToRegion, AcDc, InService)
+) AS t(InterconnectorID, Name, FromRegionID, ToRegionID, AcDc, InService)

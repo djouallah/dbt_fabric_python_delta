@@ -16,17 +16,14 @@
      (DISPATCHSCADA) carries only SCADAVALUE -- none of these columns exist in it. This table
      therefore lags by up to a day BY DESIGN; fct_summary remains the live view. --#}
 {{ config(
-    materialized='incremental',
-    incremental_strategy='insert',
-    unique_key=['date', 'time', 'DUID'],
-    partition_by=['month_key'],
+    materialized='table',
     schema='mart'
 ) }}
 
 WITH unit_dispatch AS (
   SELECT
     s.DATE AS date,
-    CAST(strftime(s.SETTLEMENTDATE, '%H%M') AS INT) AS time,
+    CAST(strftime(s.SETTLEMENTDATE, '%H%M') AS INT) AS TimeHHMM,
     s.DUID,
     d.Region AS RegionID,
     -- MAX collapses duplicates from multiple runnos/files for one interval.
@@ -51,15 +48,12 @@ WITH unit_dispatch AS (
   FROM {{ ref('fct_scada') }} s
   LEFT JOIN {{ ref('dim_duid') }} d ON s.DUID = d.DUID
   WHERE s.INTERVENTION = 0
-  {%- if is_incremental() %}
-    AND s.DATE NOT IN (SELECT DISTINCT date FROM {{ this }})
-  {%- endif %}
   GROUP BY ALL
 )
 
 SELECT
   date,
-  time,
+  TimeHHMM,
   DUID,
   RegionID,
   CAST(date AS VARCHAR) AS DateKey,

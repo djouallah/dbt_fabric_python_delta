@@ -33,17 +33,14 @@
      Grain is region-PAIR, not physical link: QNI and Terranora share the NSW1-QLD1 corridor
      and cannot be separated from net injections, nor can Heywood from Murraylink. --#}
 {{ config(
-    materialized='incremental',
-    incremental_strategy='insert',
-    unique_key=['date', 'time', 'LinkID'],
-    partition_by=['month_key'],
+    materialized='table',
     schema='mart'
 ) }}
 
 WITH ni AS (
   SELECT
     date,
-    time,
+    TimeHHMM,
     month_key,
     MAX(CASE WHEN RegionID = 'NSW1' THEN NetInterchange END) AS nsw,
     MAX(CASE WHEN RegionID = 'QLD1' THEN NetInterchange END) AS qld,
@@ -52,41 +49,38 @@ WITH ni AS (
     MAX(CASE WHEN RegionID = 'VIC1' THEN NetInterchange END) AS vic
   FROM {{ ref('fct_region') }}
   WHERE RegionID IN ('NSW1', 'QLD1', 'SA1', 'TAS1', 'VIC1')
-  {%- if is_incremental() %}
-    AND date NOT IN (SELECT DISTINCT date FROM {{ this }})
-  {%- endif %}
   GROUP BY ALL
 ),
 
 solved AS (
-  SELECT date, time, month_key,
+  SELECT date, TimeHHMM, month_key,
          nsw + qld + sa + tas + vic AS residual,
-         'QLD1-NSW1' AS LinkID, 'QLD1' AS FromRegion, 'NSW1' AS ToRegion,
+         'QLD1-NSW1' AS LinkID, 'QLD1' AS FromRegionID, 'NSW1' AS ToRegionID,
          'QNI + Terranora' AS LinkName, -qld AS FlowMW
   FROM ni
   UNION ALL
-  SELECT date, time, month_key, nsw + qld + sa + tas + vic,
+  SELECT date, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
          'VIC1-NSW1', 'VIC1', 'NSW1', 'VNI', vic + sa + tas
   FROM ni
   UNION ALL
-  SELECT date, time, month_key, nsw + qld + sa + tas + vic,
+  SELECT date, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
          'SA1-VIC1', 'SA1', 'VIC1', 'Heywood + Murraylink', -sa
   FROM ni
   UNION ALL
-  SELECT date, time, month_key, nsw + qld + sa + tas + vic,
+  SELECT date, TimeHHMM, month_key, nsw + qld + sa + tas + vic,
          'TAS1-VIC1', 'TAS1', 'VIC1', 'Basslink', -tas
   FROM ni
 )
 
 SELECT
   date,
-  time,
+  TimeHHMM,
   LinkID,
   CAST(date AS VARCHAR) AS DateKey,
-  FromRegion,
-  ToRegion,
+  FromRegionID,
+  ToRegionID,
   LinkName,
-  -- Positive = flow in the FromRegion -> ToRegion direction.
+  -- Positive = flow in the FromRegionID -> ToRegionID direction.
   -- DOUBLE, never DECIMAL(p,s): see fct_region.
   CAST(FlowMW AS DOUBLE) AS FlowMW,
   -- Same value on all four rows of an interval: sum of every region's net injection, which
