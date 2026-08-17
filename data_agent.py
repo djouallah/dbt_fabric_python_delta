@@ -19,12 +19,11 @@ import json
 import sys
 import time
 
-import duckrun
 import requests
 from duckrun.auth import get_fabric_token
 
+# No lakehouse connection: nothing here reads the data any more (see the note above session).
 WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
-LAKEHOUSE = "data"
 ONTOLOGY  = "aemo_nem"
 AGENT     = "aemo_nem_agent"
 FOLDER    = "aemo"   # workspace folder the agent lives in
@@ -178,18 +177,24 @@ question allows -- they are faster and far less error-prone.
   spaced -- nothing exists between 55 and 100 -- so never do arithmetic on TimeHHMM as a
   duration. It does compare numerically, so a clock window is a plain
   WHERE TimeHHMM >= 1800 AND TimeHHMM <= 2000.
-- THE LATEST DATE IN THE DATA IS __LATEST_DATE__. Treat that as "today". Data starts at
-  2018-04-01, and the history is a SAMPLE of days, not every consecutive day.
-- NEVER run a probe to discover the latest date, and never write a query whose only job is
-  to find one. You already know it: __LATEST_DATE__. Resolve every relative expression to
-  LITERAL ISO DATES in your head first, then write ONE query containing those literals:
-      "last week"      -> DateKey >= '__WEEK_START__' AND DateKey <= '__LATEST_DATE__'
-      "yesterday"      -> DateKey = '__YESTERDAY__'
-      "today"/"latest" -> DateKey = '__LATEST_DATE__'
-  This matters more than it looks. Splitting the work into "find the anchor" then "run the
-  aggregate" reliably loses the date predicate on the second query, and you end up averaging
-  eight years of history while believing you filtered to a week. A single query with literal
-  dates in the WHERE clause does not have that failure mode.
+- "TODAY" AND "LATEST" MEAN THE LATEST DateKey IN THE DATA, never the real-world date. The
+  data ends where it ends. It starts at 2018-04-01, the history is a SAMPLE of days rather
+  than every consecutive day, and the newest day is usually PARTIAL -- fewer than 288
+  intervals, because it is still being published.
+- To resolve any relative expression, FIRST get the anchor:
+      MATCH (ri:RegionInterval) RETURN max(ri.DateKey) AS latest
+  then subtract from it yourself -- GQL has no date arithmetic and DateKey is a plain ISO
+  string, so nothing can compute this for you -- and put the resulting LITERAL dates inline
+  in ONE aggregate query:
+      "today"/"latest" -> DateKey = '<latest>'
+      "yesterday"      -> DateKey = '<the day before latest>'
+      "last week"      -> DateKey >= '<six days before latest>' AND DateKey <= '<latest>'
+- THE SECOND QUERY IS WHERE THIS GOES WRONG, so read this twice. Having found the anchor,
+  the aggregate that follows reliably comes back MISSING its date predicate -- you average
+  eight years of history while believing you filtered to a week, and state the correct range
+  in prose while the query did no such thing. The literal dates must appear in the WHERE
+  clause of the aggregate ITSELF. Always report the resolved range AND the row count, so a
+  dropped filter is visible instead of silent.
 - COUNT THE INTERVALS BEFORE YOU BELIEVE THE NUMBER. There are exactly 288 five-minute
   intervals in a day, so for ONE region:
       one day   -> ~288 rows        one week  -> ~2,016 rows
@@ -357,27 +362,18 @@ range you report is wider than the range the question asked for, you have made a
 stop and re-run rather than explaining the discrepancy away.
 """.strip()
 
-# Bake the data's own latest date into the instructions at DEPLOY time.
+# NO DATE IS BAKED IN. An earlier version substituted __LATEST_DATE__ here from
+# `SELECT max(date) FROM mart.fct_region`, and told the agent "the latest date is X, treat it
+# as today, NEVER probe". That removed the two-step plan the agent gets wrong -- but a
+# constant is only true until the next dbt run, and the pipeline lands new data every 720m
+# while the agent is only redeployed by hand. So the instruction went stale within hours and
+# then actively FORBADE the agent from noticing. A wrong date stated confidently is a worse
+# failure than a dropped predicate, because nothing surfaces it.
 #
-# Why this is not a nicety: the agent CAN filter a literal date range correctly -- asking
-# "between 2026-08-05 and 2026-08-11" returns 5915.88 MW over 1,777 intervals, exact. What it
-# cannot do reliably is the two-step version: probe for max(DateKey), then apply the derived
-# range. On the second query the date predicate goes missing, and it averages the whole
-# 78,000-interval history while reporting the correct-looking range in prose. Handing it the
-# date as a constant removes the first step, so every relative expression becomes the literal
-# form that already works. Re-run this script after a dbt run to move the date forward.
-lakehouse = duckrun.connect(f"{duckrun.workspace(WORKSPACE).display_name}/{LAKEHOUSE}.Lakehouse")
-LATEST_DATE = str(lakehouse.sql("SELECT max(date) FROM mart.fct_region").fetchone()[0])
-WEEK_START = str(lakehouse.sql(
-    "SELECT max(date) - INTERVAL 6 DAY FROM mart.fct_region").fetchone()[0])[:10]
-YESTERDAY = str(lakehouse.sql(
-    "SELECT max(date) - INTERVAL 1 DAY FROM mart.fct_region").fetchone()[0])[:10]
-INSTRUCTIONS = (INSTRUCTIONS
-                .replace("__LATEST_DATE__", LATEST_DATE)
-                .replace("__WEEK_START__", WEEK_START)
-                .replace("__YESTERDAY__", YESTERDAY))
-print(f"latest date in the data: {LATEST_DATE} (week starts {WEEK_START})")
-
+# "Today means the latest DateKey in the data" is true forever and needs no redeploy. The
+# two-step plan is still the weak spot, so the instructions counter it where it actually
+# fails -- demanding the literal dates appear in the aggregate's own WHERE clause, and a row
+# count alongside every answer so a lost filter shows up as an absurd interval count.
 session = requests.Session()
 session.headers.update({"Authorization": f"Bearer {get_fabric_token()}",
                         "Content-Type": "application/json", "Accept": "application/json"})

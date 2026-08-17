@@ -48,8 +48,13 @@ behind `DEPLOY_SEMANTIC_MODEL` (env var — NOT `sys.argv`, which `data_agent.py
 
 **The ontology and data agent deploy from `deploy.py` too, just not from `fabric_items/`.**
 duckrun's folder deploy only knows `VariableLibrary`, `Notebook`, `SemanticModel` and
-`DataPipeline` and raises `unsupported item type` on anything else, so an `.Ontology` folder
-dropped into `fabric_items/` would break the whole deploy. Instead `deploy.py` ends with
+`DataPipeline`. `_scan_item_folders` validates **every** item folder before deploying **any** of
+them and raises `unsupported item type` rather than skipping, so a single `.Ontology` folder
+dropped into `fabric_items/` makes `ws.deploy("fabric_items", ...)` fail outright and ship
+nothing — not the notebook, not the pipeline, not the variable library. (Tried it; that is
+measured, not theoretical. There is no exclude filter, the same constraint that put the semantic
+model in its own folder. Tracking issue:
+[duckrun#57](https://github.com/djouallah/duckrun/issues/57).) Instead `deploy.py` ends with
 `runpy.run_path("ontology.py")` then `runpy.run_path("data_agent.py")` — same step, same
 `aemo` folder as everything else, and they run under **both** `deploy=full` and
 `deploy=no_model` (only `none` skips them). Order matters: the agent binds the ontology by
@@ -327,18 +332,29 @@ virtualization.
   `DateKey` predicate missing. Raw GQL with the same filter is correct, so it is the
   NL2Ontology planner losing the predicate across its two-step plan, not the engine.
   Mitigations tried, in order: a forceful "anchoring is only half the job" rule; an interval
-  -count sanity table; and finally **injecting the latest date into `aiInstructions` at
-  deploy time** (`data_agent.py` queries `max(date) FROM mart.fct_region` and substitutes
-  `__LATEST_DATE__`/`__WEEK_START__`) so no probe step is needed at all. **That constant
-  goes stale as soon as dbt runs again** — it drifted two days within hours — so a relative
-  -date answer is only as current as the last `deploy=full`. Re-deploy to refresh it, and
-  prefer explicit dates for anything that matters. That last one helped
-  — SA1 spare capacity then came back exact at 2,042 MW over 1,777 intervals — but QLD1
-  demand still fails intermittently on the same question shape. **Treat it as non-determinism
-  and use explicit dates for anything that matters.**
+  -count sanity table; and then **baking the latest date into `aiInstructions` at deploy
+  time** — `data_agent.py` queried `max(date) FROM mart.fct_region` and substituted
+  `__LATEST_DATE__`/`__WEEK_START__`/`__YESTERDAY__`, paired with a rule telling the agent to
+  NEVER probe. **That third one has been REMOVED — don't reintroduce it.** It did help (SA1
+  spare capacity came back exact at 2,042 MW over 1,777 intervals) but it was wrong in a way
+  the numbers hid: a baked constant is only true until the next dbt run, the pipeline lands
+  new data **every 720m** while the agent is redeployed only by a manual `deploy=full`, and
+  the paired "never probe" rule forbade the agent from ever noticing. It drifted two days
+  within hours. A confidently-stated wrong date is a worse failure than a dropped predicate,
+  because nothing surfaces it.
+  What replaced it is a rule instead of a constant: **"today"/"latest" means the latest
+  `DateKey` in the data**, which is true forever and needs no redeploy. The agent probes for
+  the anchor (`MATCH (ri:RegionInterval) RETURN max(ri.DateKey)`) and subtracts itself — GQL
+  has no date arithmetic, so nothing else can. The two-step plan is still the weak spot, so
+  the instructions now counter it where it actually breaks: the literal dates must appear in
+  the **aggregate's own** `WHERE` clause, not just in the anchor query.
+  QLD1 demand still fails intermittently on this question shape. **Treat it as
+  non-determinism and use explicit dates for anything that matters.**
   What DOES work reliably is making the failure visible: because the instructions force a row
   count alongside every measure, a wrong answer announces itself as "78,146 intervals" instead
   of arriving as a plausible number. Keep that rule.
+  Side effect worth knowing: with the `max(date)` query gone, `data_agent.py` no longer opens
+  a lakehouse at all — no `import duckrun`, no `LAKEHOUSE` constant, pure Fabric REST.
 - **Ontology, GraphModel and DataAgent do NOT appear in `GET /workspaces/{ws}/items`.**
   The unfiltered list omits them entirely; `items?type=Ontology` does return them, as do
   their own `/ontologies`, `/GraphModels`, `/dataAgents` collections. Don't conclude an
@@ -392,3 +408,41 @@ virtualization.
 incantation. `deploy.py` deliberately does NOT run the notebook: CI's own dbt run already
 wrote the Delta tables to the same lakehouse, so it would be redundant. The notebook is
 exercised by the scheduled pipeline.
+
+## Reading an item back out of Fabric — `download.py`
+
+`python download.py` writes a deployed item's definition to the **gitignored** `fabric_download/`
+as `{displayName}.{ItemType}/`, decoded, in the git-integration part layout. No args = the
+ontology and the data agent; `python download.py <collection> [displayName]` takes any collection
+(`ontologies`, `dataAgents`, `GraphModels`, `notebooks`, …). It is a **laptop inspection tool**:
+`deploy.py` does not call it, CI does not run it, and it never opens a lakehouse.
+
+- **It is not a round trip.** `ontology.py` and `data_agent.py` build their parts from Python
+  (`ENTITIES`/`RELATIONSHIPS`, `INSTRUCTIONS`) and never read the filesystem — they stay the
+  source of truth. The download exists to see what Fabric *actually stored* — the only way to
+  check the undocumented `"type": "ontology"` data-source bet (verified: the stored
+  `datasource.json` echoes it straight back), and to read the live `aiInstructions` rather
+  than the ones you think you deployed. That second use is what killed the baked-date hack:
+  downloading showed the deployed agent asserting a date **one day stale**, which is how the
+  drift stopped being theoretical.
+- **`OUT` must not be pointed at `fabric_items/`.** duckrun's folder deploy raises
+  `unsupported item type` on anything outside VariableLibrary / Notebook / SemanticModel /
+  DataPipeline, so downloading straight into it breaks the whole deploy.
+- **Don't commit the downloaded parts.** The ontology expands to **40 files / 34 KB** whose
+  directories are 19-digit BigInts minted by `big_id()` and whose bindings are GUIDs, so a diff
+  reads `EntityTypes/8349478236053681467/definition.json changed`. `ontology.py`'s
+  `ENTITIES`/`RELATIONSHIPS` dicts are the readable source those 40 files are compiled from —
+  keeping both would be checking in build output next to its generator.
+- **`getDefinition` returns `.platform` even when the item's documented parts table omits it.**
+  The Data Agent parts table lists no `.platform` — and `data_agent.py` sends none, which is why
+  it must omit `?updateMetadata=true` — yet the download comes back with one (Fabric's "Get Item
+  definition always returns the platform file"). Its presence in `fabric_download/` is not a sign
+  the script sends it.
+- **`getDefinition` may answer 200 OR 202.** On 202 the payload is at `{Location}/result`, not in
+  the operation-status body — so the shared `call()` helper is not enough, and `download.py` has
+  its own `get_definition()` handling both (`data_agent.py --dump` reimplements the 202 half).
+- **`GraphModels` supports `getDefinition` too**, though it is undocumented: 6 parts
+  (`graphDefinition.json`, `graphType.json`, `graphSettings.json`, `dataSources.json`,
+  `stylingConfiguration.json`, `.platform`).
+- Sanity check for the ontology: **8 entity types, 11 relationship types, 40 parts** — matching
+  `ENTITIES`/`RELATIONSHIPS` and the count `ontology.py` prints on deploy.
