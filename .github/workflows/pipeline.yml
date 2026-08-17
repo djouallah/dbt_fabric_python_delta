@@ -9,6 +9,16 @@ on:
         type: choice
         options: [none, no_model, full]
         default: none
+      runner:
+        description: "Where dbt runs. remote = a throwaway Fabric notebook, data-local to OneLake (default); local = on the GitHub runner, pulling every byte across the internet"
+        type: choice
+        options: [remote, local]
+        default: remote
+      cores:
+        description: "vCores for the remote notebook (Fabric sizes 4/8/16/32/64). Ignored when runner=local"
+        type: choice
+        options: ["4", "8", "16", "32"]
+        default: "8"
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -46,6 +56,10 @@ env:
   # variable library for the in-Fabric notebook run. Caps NEW downloads per run; there is no
   # process limit any more (every model rebuilds from the full archive).
   CI_DOWNLOAD_LIMIT: "6"
+  # Where dbt runs, and how big the remote notebook is. Defaults matter: a plain
+  # `gh workflow run` with no inputs gets the remote runner at 8 vCores.
+  DBT_RUNNER: ${{ github.event.inputs.runner || 'remote' }}
+  DBT_CORES: ${{ github.event.inputs.cores || '8' }}
 
 jobs:
   pipeline:
@@ -83,15 +97,16 @@ jobs:
           if landing not in names:
               raise SystemExit(f"landing lakehouse '{landing}' not found in {names}")
           landing_id = next(l["id"] for l in ws.list_lakehouses() if l["displayName"] == landing)
-          # Tables path travels as the OneLake shorthand `<workspace>/<item>.Lakehouse`: duckrun
-          # expands it wherever a root enters (profiles.yml root_path, duckrun.connect). FILES_PATH
-          # stays a full URL — stg_csv_archive_log.py and the read_csv macros paste it straight
-          # into read_csv/read_parquet, which never see the expander.
+          # BOTH paths are full abfss URLs. duckrun would expand the OneLake shorthand
+          # `<workspace>/<item>.Lakehouse` for the Tables root, but RemoteRunner rejects it —
+          # it needs the URL to locate the workspace and lakehouse to run the notebook against.
+          # FILES_PATH was always a full URL: stg_csv_archive_log.py and the read_csv macros
+          # paste it straight into read_csv/read_parquet, which never see the expander.
           #
           # THE TWO POINT AT DIFFERENT LAKEHOUSES. Tables -> the new lakehouse dbt builds into;
           # Files -> the landing lakehouse holding the raw archive. dbt keeps ONE root_path, so
           # every ref() still resolves inside one lakehouse and nothing crosses.
-          print(f"ONELAKE_TABLES_PATH={ws.display_name}/{lh_name}.Lakehouse")
+          print(f"ONELAKE_TABLES_PATH=abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{lh_id}/Tables")
           print(f"FILES_PATH=abfss://{ws_id}@onelake.dfs.fabric.microsoft.com/{landing_id}/Files")
           print(f"WS_NAME={ws.display_name}")
           print(f"LH_ID={lh_id}")
@@ -102,30 +117,20 @@ jobs:
           echo "T_LAKEHOUSE=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
 
       - name: 🔨 Phase 2 — dbt run
-        run: |
-          T0=$(date +%s)
-          DBT="--target dev --project-dir dbt --profiles-dir dbt"
-          # Same flow as the Fabric notebook: ONE run. Every model is a table now, so the DAG
-          # order is all the sequencing there is — no check_new_daily probe, no --full-refresh
-          # branch, no per-model excludes. stg_csv_archive_log downloads new CSVs as a side
-          # effect and everything downstream rebuilds from the whole archive.
-          dbt run $DBT \
-            || { echo "::warning::dbt run failed — retrying once..."; sleep 60; dbt retry $DBT; }
-          cp dbt/target/run_results.json /tmp/rr_0.json 2>/dev/null || true
-          echo "T_DBT_RUN=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
+        # ONE run. Every model is a table now, so the DAG order is all the sequencing there is
+        # — no check_new_daily probe, no --full-refresh branch, no per-model excludes.
+        # stg_csv_archive_log downloads new CSVs as a side effect and everything downstream
+        # rebuilds from the whole archive. run_dbt.py picks the runner and writes the phase
+        # timing plus the run_results.json the dashboard reads.
+        run: python run_dbt.py run
 
       - name: ✅ Phase 3 — dbt test
-        run: |
-          T0=$(date +%s)
-          dbt test --target dev --project-dir dbt --profiles-dir dbt --exclude tag:heavy
-          cp dbt/target/run_results.json /tmp/test_results.json
-          echo "T_DBT_TEST=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
+        run: python run_dbt.py test
 
       - name: 📚 Phase 4 — dbt docs generate
-        run: |
-          T0=$(date +%s)
-          dbt docs generate --target dev --project-dir dbt --profiles-dir dbt
-          echo "T_DBT_DOCS=$(($(date +%s) - T0))" >> "$GITHUB_ENV"
+        # Always local: docs is a catalog query, not a build, and Pages publishes the local
+        # target/ directory that only a local run produces.
+        run: python run_dbt.py docs
 
       - name: 🚀 Phase 5 — Deploy Fabric items (optional)
         run: |
@@ -270,6 +275,8 @@ jobs:
           print("| :---: | --- |")
           print(f"| 🏢 Workspace | `{ws}` |")
           print(f"| 🏠 Lakehouse | `{lh}` _({lh_action})_ |")
+          print(f"| 📦 Landing | `{env('LH_LANDING', '?')}` _(raw archive, read-only)_ |")
+          print(f"| ⚙️ dbt runner | {env('DBT_RUNNER_USED', env('DBT_RUNNER', '?'))} |")
           if env('DEPLOY_SKIPPED') == 'true':
               print("\n_Deploy skipped — run with `deploy: full` to deploy the Fabric items_")
           else:
