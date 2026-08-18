@@ -81,12 +81,25 @@ Historical note: a pure-OIDC run used to fail with a bare `Unauthorized` because
 valid, returning 200 on both the dfs and blob endpoints). Fixed in duckrun 0.4.26, which retries
 the exchange and propagates the failure instead of swallowing it.
 
-## Config lives in deploy.py
+## Config: one env vocabulary, nothing hardcoded twice
 
-There is no `deploy_config.yml`. `WORKSPACE`, `LAKEHOUSE`, `LAKEHOUSE_LANDING`, `FOLDER`,
-`SCHEDULE_EVERY`, `DOWNLOAD_LIMIT` are constants at the top of `deploy.py`. The workflow repeats
-`WS_ID` / `LH_NAME` / `LH_LANDING` in its own `env:` block (deploy.py is a flat script, so
-importing it to read the constants would run a deploy) — **keep the two in sync**.
+There is no `deploy_config.yml`, and since plan B there are no per-script constants to keep
+in sync either. The deploy target is four env vars — `WS_ID`, `LH_NAME`, `LH_LANDING`,
+`FOLDER` — surfaced as `workflow_dispatch` inputs in `pipeline.yml` (defaults:
+`450bf196-431f-463f-9316-2d1ce1da98db` = `sqlengines`, `aemo`, `aemo_landing`, `FabricIQ`)
+and read with the SAME defaults by every script (`deploy.py`, `ontology.py`,
+`data_agent.py`, `refresh_graph.py`, `download.py`, `ask.py`, `gql.py`, `shutdown.py`,
+`operations_agent.py`, and the notebook's laptop-fallback branch). CI inputs flow through
+the job `env:` into `deploy.py` and everything it `runpy`s; a bare laptop run targets the
+same place as a bare `gh workflow run`. `SCHEDULE_EVERY` / `DOWNLOAD_LIMIT` stay constants
+in `deploy.py`. To deploy the stack to ANY workspace, pass `-f workspace_id=…` (plus
+lakehouse/folder names if desired) — that is the whole procedure.
+
+**The old `analytics_as_code` stack (East US) is frozen, not migrated.** Its items, its
+8-year archive in `data_landing`, and its own 720m schedule are all still there and
+deliberately untouched; the parameterized default now points elsewhere, so CI no longer
+builds into it. The move happened because East US excludes the Operations Agent item type
+(see below).
 
 ## Delta writes via the duckrun dbt adapter
 
@@ -110,25 +123,33 @@ virtualization.
 
 ## Two lakehouses, and NO incremental
 
-**`data_landing` holds the raw AEMO archive; `data` holds every Delta table dbt builds.**
-`data_landing` is the ORIGINAL `data` lakehouse, renamed by hand — same GUID — so anything
-still pointing at `6bd45441-…` is pointing at the archive, not the mart. It contains
-`Files/csv/**` (~1,060 gzipped CSVs) plus `csv_archive_log.parquet`, **no Tables**, and is
-never written by dbt's Tables output. It is NOT created by `deploy.py` or CI: both check it
-exists and fail loudly if it doesn't, because silently provisioning an empty one would
-re-download eight years of CSVs.
+**The landing lakehouse (`LH_LANDING`, default `aemo_landing`) holds the raw AEMO archive;
+the transform lakehouse (`LH_NAME`, default `aemo`) holds every Delta table dbt builds**,
+plus the dbt project under `Files/dbt`. Since plan B **both are created idempotently** by
+CI Phase 1 and `deploy.py` — a fresh workspace starts with an EMPTY landing and
+`stg_csv_archive_log.py` bootstraps it from scratch (missing log → empty temp table →
+downloads proceed, GitHub backfill included), `download_limit` files per source per run.
+The archive therefore grows gradually; the first runs build small marts, and the dbt tests
+are invariants that hold at any volume (measured on the very first scratch run: 68 pass,
+1 warn — the known orphan-DUID relationship warn).
+
+Historical note: the old workspace's `data_landing` (the ORIGINAL `data` lakehouse renamed
+by hand — same GUID, so `6bd45441-…` points at the archive, not the mart) holds the full
+8-year, ~1,060-file archive. It is frozen with the rest of that stack, and the old
+"fail loudly rather than provision an empty landing" guard went with it — scratch
+bootstrapping is now the designed behaviour, not an accident to prevent.
 
 The split is two env vars pointing at two lakehouses — nothing more:
 
 | var | lakehouse | form |
 | --- | --- | --- |
-| `ONELAKE_TABLES_PATH` | `data` | shorthand in CI, full abfss in the notebook |
-| `FILES_PATH` | `data_landing` | always a full abfss URL |
+| `ONELAKE_TABLES_PATH` | `LH_NAME` (`aemo`) | shorthand in CI, full abfss in the notebook |
+| `FILES_PATH` | `LH_LANDING` (`aemo_landing`) | always a full abfss URL |
 
 There is **no OneLake shortcut and no `sources.yml` with `location:`**. dbt keeps ONE
 `root_path`, so every `ref()` resolves inside one lakehouse and no model crosses — only the
-raw `read_csv` paths point elsewhere, and those were already absolute strings. The dbt project
-itself (`Files/dbt`) lives in `data`, which is the lakehouse the notebook mounts.
+raw `read_csv` paths point elsewhere, and those were already absolute strings. The dbt
+project itself (`Files/dbt`) lives in the transform lakehouse, which the notebook mounts.
 
 **Every model is `materialized='table'`. There is no `is_incremental()` anywhere.** The data
 was deleted and rebuilt from scratch, and incremental had nothing left to preserve. What went
@@ -470,16 +491,18 @@ fires, and carries a `FabricJobAction` that runs `run_pipeline` on approval from
 card. `operations_agent.py` deploys it code-first (single `Configurations.json` part, the
 documented OperationsAgentV1 format), mirroring `data_agent.py`'s helpers.
 
-**The agent is DEPLOYED — as `aemo_nem_ops` (3163c95c-93b3-4a55-9b62-dc239ae1be68) in the
-`sqlengines` workspace (450bf196-431f-463f-9316-2d1ce1da98db), NOT alongside the ontology.**
-That split is forced and load-bearing: `analytics_as_code` sits on a P1 in **East US — one
-of exactly two US regions where "Operations agent (preview)" is excluded** (the other is
-South Central US; https://learn.microsoft.com/fabric/admin/region-availability), so
-creating the agent there answers `403 FeatureNotAvailable`. Tenant config was eliminated
-first and is NOT the problem (`EnableAOAI`, both cross-geo AOAI switches, `OntologyPreview`
-all on; not a trial; no disabled tenant setting mentions the item type). `sqlengines` is on
-West Europe, which has no exclusions — and the **cross-workspace ontology dataSource works**:
-each `dataSources` entry carries its own `workspaceId`.
+**The whole stack now co-locates with the agent (plan B): everything deploys to the
+parameterized workspace — default `sqlengines` (450bf196), West Europe, `FabricIQ` folder —
+because the old workspace's P1 sits in East US, one of exactly two US regions where
+"Operations agent (preview)" is excluded** (the other is South Central US, which also lacks
+Ontology); see https://learn.microsoft.com/fabric/admin/region-availability. Creating the
+agent there answers `403 FeatureNotAvailable`. Tenant config was eliminated first and is
+NOT the problem (`EnableAOAI`, both cross-geo AOAI switches, `OntologyPreview` all on; not
+a trial; no disabled tenant setting mentions the item type). The agent is
+`aemo_nem_ops` (a59fd3b4-b910-40cb-8102-7030255be8fd), same workspace as the ontology.
+A **cross-workspace ontology dataSource also works** (each `dataSources` entry carries its
+own `workspaceId`) — that ran for a while before plan B; co-location just removes the
+unproven cross-REGION agent→graph hop.
 
 Everything below was measured against the live service on 2026-08-18, and the live service
 disagrees with the docs article on several points:
@@ -508,6 +531,9 @@ disagrees with the docs article on several points:
   (repeat after instruction changes). That is the ONE manual step; everything else is code.
 - Bare create (`POST /operationsAgents` with just displayName) → 201; then
   `updateDefinition`. `PATCH /operationsAgents/{id}` fixes displayName/description.
+  **Create WITH a definition in one call also works when `actions` is empty** (measured:
+  the plan-B agent was created that way) — the earlier one-call failure was purely the
+  FabricJobAction.
 
 The *other* operational route — **Rules on ontology entity types (Activator-backed)** —
 was considered and dropped: it requires at least one **TimeSeries-bound property** (our v5
