@@ -5,14 +5,17 @@ import runpy
 
 import duckrun
 
-WORKSPACE      = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
-# Two lakehouses. LAKEHOUSE holds every Delta table dbt builds plus the dbt project itself
-# under Files/dbt; LAKEHOUSE_LANDING holds the raw AEMO archive under Files/ and is never
-# written by dbt's Tables output. The landing one is NOT created here — it predates this
-# script and outlives every run.
-LAKEHOUSE         = "data"
-LAKEHOUSE_LANDING = "data_landing"
-FOLDER         = "aemo"   # workspace folder every deployed item lands in
+# The deploy target comes from the environment (CI's workflow inputs flow through its
+# env: block into this process and everything runpy'd from it); the defaults make a bare
+# laptop run target the same place as a bare `gh workflow run`. Same vocabulary + defaults
+# in every script — nothing is defined in two places that can drift.
+WORKSPACE      = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
+# Two lakehouses, both in the target workspace. LAKEHOUSE holds every Delta table dbt
+# builds plus the dbt project itself under Files/dbt; LAKEHOUSE_LANDING holds the raw AEMO
+# archive under Files/ and is never written by dbt's Tables output.
+LAKEHOUSE         = os.environ.get("LH_NAME", "aemo")
+LAKEHOUSE_LANDING = os.environ.get("LH_LANDING", "aemo_landing")
+FOLDER         = os.environ.get("FOLDER", "FabricIQ")   # workspace folder every item lands in
 SCHEDULE_EVERY = "720m"
 DOWNLOAD_LIMIT = "5"
 
@@ -27,9 +30,9 @@ DEPLOY_MODEL = os.environ.get("DEPLOY_SEMANTIC_MODEL", "true").lower() != "false
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 ws = duckrun.workspace(WORKSPACE)
 ws.create_lakehouse(LAKEHOUSE, folder=FOLDER)   # idempotent
-if LAKEHOUSE_LANDING not in [l["displayName"] for l in ws.list_lakehouses()]:
-    raise SystemExit(f"landing lakehouse '{LAKEHOUSE_LANDING}' not found — it holds the raw "
-                     f"archive and is not created here")
+# The landing lakehouse is created too: a fresh workspace starts with an EMPTY archive and
+# stg_csv_archive_log bootstraps it from scratch, download_limit files per source per run.
+ws.create_lakehouse(LAKEHOUSE_LANDING, folder=FOLDER)
 # The dbt project lives in the TRANSFORM lakehouse: it is the one the notebook mounts, and
 # keeping it out of the landing lakehouse leaves that one holding nothing but raw AEMO files.
 files = duckrun.connect(f"{ws.display_name}/{LAKEHOUSE}.Lakehouse")

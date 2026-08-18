@@ -49,11 +49,13 @@ import yaml
 from duckrun.auth import get_fabric_token
 
 # Environment, not model: which workspace and lakehouse the ontology is deployed against.
-# The model's own name and description come from the YAML.
-WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
-LAKEHOUSE = "data"
+# The model's own name and description come from the YAML. Env-driven with the same
+# defaults as pipeline.yml / deploy.py, so CI inputs flow through and a bare run targets
+# the same place.
+WORKSPACE = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
+LAKEHOUSE = os.environ.get("LH_NAME", "aemo")
 SCHEMA    = "mart"
-FOLDER    = "aemo"   # workspace folder the ontology and its graph live in
+FOLDER    = os.environ.get("FOLDER", "FabricIQ")   # folder the ontology and graph live in
 API       = "https://api.fabric.microsoft.com/v1"
 MODEL_FILE = "ontology.yaml"
 CHECK_DIR  = os.path.join("fabric_download", "aemo_nem.Ontology")   # --check compares here

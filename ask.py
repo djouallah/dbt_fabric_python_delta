@@ -17,13 +17,14 @@
 # view, extend INSTRUCTIONS in data_agent.py, redeploy, re-ask.
 
 import json
+import os
 import sys
 import time
 
 import requests
 from duckrun.auth import get_fabric_token
 
-WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
+WORKSPACE = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
 AGENT     = "aemo_nem_agent"
 API       = "https://api.fabric.microsoft.com/v1"
 TIMEOUT   = 600  # seconds; the ~37s full rollup traversal is only part of one turn

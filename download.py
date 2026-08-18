@@ -33,9 +33,8 @@ import time
 import requests
 from duckrun.auth import get_fabric_token
 
-# Kept in sync by hand with ontology.py / data_agent.py -- both are flat scripts, so importing
-# one to read its constants would run a deploy.
-WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
+# Same env vocabulary + default as every other script -- nothing to keep in sync by hand.
+WORKSPACE = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
 API       = "https://api.fabric.microsoft.com/v1"
 OUT       = "fabric_download"   # gitignored
 

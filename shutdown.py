@@ -18,10 +18,12 @@
 # Note QNI and Terranora both join NSW1<->QLD1, so cutting either one alone strands nothing;
 # the walk handles that for free.
 
+import os
+
 import requests
 from duckrun.auth import get_fabric_token
 
-WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
+WORKSPACE = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
 ONTOLOGY  = "aemo_nem"
 API       = "https://api.fabric.microsoft.com/v1"
 ROOT      = "NSW1"   # reference region: whatever cannot reach it is stranded

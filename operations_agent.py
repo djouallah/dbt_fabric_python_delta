@@ -11,14 +11,14 @@
 #     python operations_agent.py            # create-or-update, started
 #     python operations_agent.py --dump     # print the stored definition, decoded
 #
-# THE AGENT LIVES IN A DIFFERENT WORKSPACE THAN THE ONTOLOGY, on purpose. analytics_as_code
-# sits on a P1 in East US — one of exactly two US regions where "Operations agent (preview)"
-# is excluded (learn.microsoft.com/fabric/admin/region-availability), so creating the agent
-# there answers 403 FeatureNotAvailable (tenant settings were eliminated first; all on).
-# The definition schema is built for the split: each dataSources entry and the action's
-# connection carry their own workspaceId, so the agent binds the ontology and runs the
-# pipeline cross-workspace. Set AGENT_WORKSPACE to any workspace on a capacity whose region
-# has no exclusion; collapse it back into WORKSPACE if the East US exclusion ever lifts.
+# Everything lives in ONE workspace now (plan B): the whole stack deploys to a workspace
+# whose capacity region supports the item type. The original workspace's P1 sits in East
+# US — one of exactly two US regions where "Operations agent (preview)" is excluded
+# (learn.microsoft.com/fabric/admin/region-availability) — and answers 403
+# FeatureNotAvailable on create; tenant settings were eliminated first, all correctly on.
+# A cross-workspace dataSource DID work (each entry carries its own workspaceId), so a
+# split is possible if ever needed again; co-location just removes the unproven
+# cross-region agent->graph hop.
 #
 # The definition is ONE part, Configurations.json -- MEASURED against the live service,
 # which differs from the docs article in three ways (all verified 2026-08-18 by pushing
@@ -53,6 +53,7 @@
 
 import base64
 import json
+import os
 import sys
 import time
 import uuid
@@ -60,12 +61,11 @@ import uuid
 import requests
 from duckrun.auth import get_fabric_token
 
-WORKSPACE       = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code: ontology + pipeline
-AGENT_WORKSPACE = "450bf196-431f-463f-9316-2d1ce1da98db"  # where the agent item is created
+WORKSPACE = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
 ONTOLOGY  = "aemo_nem"
 AGENT     = "aemo_nem_ops"
 PIPELINE  = "run_pipeline"   # the FabricJobAction target, when the flag below turns on
-FOLDER    = "aemo"           # folder for the agent, IF the agent workspace has one
+FOLDER    = os.environ.get("FOLDER", "FabricIQ")
 API       = "https://api.fabric.microsoft.com/v1"
 SCHEMA    = ("https://developer.microsoft.com/json-schemas/fabric/item/operationsAgents/"
              "definition/1.0.0/schema.json")
@@ -136,7 +136,7 @@ def part(path, obj):
 
 def find_agent(name):
     return next((a for a in
-                 call("GET", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents").json()["value"]
+                 call("GET", f"{API}/workspaces/{WORKSPACE}/operationsAgents").json()["value"]
                  if a["displayName"] == name), None)
 
 
@@ -144,7 +144,7 @@ def get_definition(agent_id):
     """getDefinition is an LRO whose payload lives at {Location}/result, not in the
     operation-status body that call() would hand back."""
     resp = session.post(
-        f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents/{agent_id}/getDefinition")
+        f"{API}/workspaces/{WORKSPACE}/operationsAgents/{agent_id}/getDefinition")
     if resp.status_code == 202 and resp.headers.get("Location"):
         location = resp.headers["Location"]
         while True:
@@ -168,7 +168,7 @@ if "--dump" in sys.argv:
     found = find_agent(target)
     if not found:
         names = [a["displayName"] for a in
-                 call("GET", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents").json()["value"]]
+                 call("GET", f"{API}/workspaces/{WORKSPACE}/operationsAgents").json()["value"]]
         raise SystemExit(f"No operations agent named '{target}'. Found: {names}")
     print(f"{target} ({found['id']})\n")
     for p in get_definition(found["id"]):
@@ -219,18 +219,18 @@ parts = [part("Configurations.json", {
 })]
 
 existing = find_agent(AGENT)
+folder_id = next((f["id"] for f in
+                  call("GET", f"{API}/workspaces/{WORKSPACE}/folders").json()["value"]
+                  if f["displayName"] == FOLDER), None)
 
 if existing:
     agent_id = existing["id"]
     # No ?updateMetadata=true: no .platform part is sent, same as the data agent.
-    call("POST", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents/{agent_id}/updateDefinition",
+    call("POST", f"{API}/workspaces/{WORKSPACE}/operationsAgents/{agent_id}/updateDefinition",
          json={"definition": {"parts": parts}})
     print(f"Updated operations agent '{AGENT}' ({agent_id})")
 else:
-    folder_id = next((f["id"] for f in
-                      call("GET", f"{API}/workspaces/{AGENT_WORKSPACE}/folders").json()["value"]
-                      if f["displayName"] == FOLDER), None)
-    created = call("POST", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents", json={
+    created = call("POST", f"{API}/workspaces/{WORKSPACE}/operationsAgents", json={
         "displayName": AGENT,
         "description": f"Operational monitoring of the NEM grounded on the {ONTOLOGY} ontology",
         "folderId": folder_id,
@@ -238,12 +238,15 @@ else:
     }).json()
     agent_id = created.get("id") or find_agent(AGENT)["id"]
     print(f"Created operations agent '{AGENT}' ({agent_id})")
-    # folderId on create is not honoured by every preview item type, so assert placement.
-    if folder_id:
-        moved = session.post(f"{API}/workspaces/{AGENT_WORKSPACE}/items/{agent_id}/move",
-                             json={"targetFolderId": folder_id})
-        print(f"  agent -> folder '{FOLDER}'" if moved.ok
-              else f"  agent move -> {moved.status_code}: {moved.text[:160]}")
+
+# Assert placement on BOTH paths: folderId on create is not honoured by every preview item
+# type, and an agent can predate the folder (this one did — created at the workspace root
+# before the FabricIQ deploy existed). Moving an item already in place is harmless.
+if folder_id:
+    moved = session.post(f"{API}/workspaces/{WORKSPACE}/items/{agent_id}/move",
+                         json={"targetFolderId": folder_id})
+    print(f"  agent -> folder '{FOLDER}'" if moved.ok
+          else f"  agent move -> {moved.status_code}: {moved.text[:160]}")
 
 # Echo what Fabric actually stored: a rejected/rewritten field (the "Ontology" dataSource
 # type, the action shape, whether shouldRun stuck) is visible now rather than as a silent

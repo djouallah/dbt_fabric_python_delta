@@ -19,6 +19,22 @@ on:
         type: choice
         options: ["4", "8", "16", "32"]
         default: "8"
+      workspace_id:
+        description: "Target Fabric workspace GUID"
+        type: string
+        default: "450bf196-431f-463f-9316-2d1ce1da98db"
+      lakehouse:
+        description: "Transform lakehouse (dbt Delta tables + Files/dbt)"
+        type: string
+        default: "aemo"
+      lakehouse_landing:
+        description: "Landing lakehouse (raw AEMO archive; created empty if missing — a fresh one bootstraps from scratch)"
+        type: string
+        default: "aemo_landing"
+      folder:
+        description: "Workspace folder every deployed item lands in"
+        type: string
+        default: "FabricIQ"
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -39,19 +55,19 @@ env:
   # assertion — no azure/login, no token step. Needs `id-token: write` (set above).
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  # Keep in sync with deploy.py's WORKSPACE / LAKEHOUSE / LAKEHOUSE_LANDING / FOLDER
-  # (deploy.py is a flat script, so importing it to read the constants would run a deploy).
-  # FOLDER matters here too: Phase 1 runs on EVERY run and is what actually creates the
-  # lakehouse, and duckrun only places an item in a folder when it CREATES it — so if this
-  # call omitted the folder the lakehouse would land at the workspace root and deploy.py
-  # could never move it.
-  WS_ID: 91588e42-0f1c-4e56-bcaa-cbf015b8f312
-  # Two lakehouses. LH_LANDING holds the raw AEMO archive under Files/ and is NEVER written
-  # by dbt's Tables output — it outlives every run and is not created here. LH_NAME holds
-  # every Delta table dbt builds, plus the dbt project itself under Files/dbt.
-  LH_NAME: data
-  LH_LANDING: data_landing
-  FOLDER: aemo
+  # The deploy target, from workflow inputs — a plain `gh workflow run` gets the defaults.
+  # deploy.py and every helper script read these SAME env vars with the same defaults, so
+  # the target is defined exactly twice (here and in each script's fallback) and can be
+  # overridden everywhere at once from the dispatch form. FOLDER matters in Phase 1 too:
+  # duckrun only places an item in a folder when it CREATES it.
+  # Two lakehouses, both in the target workspace: LH_NAME holds every Delta table dbt
+  # builds plus the dbt project under Files/dbt; LH_LANDING holds the raw AEMO archive
+  # under Files/ and is never written by dbt's Tables output. A missing landing is CREATED
+  # empty and bootstraps from scratch, download_limit files per source per run.
+  WS_ID: ${{ github.event.inputs.workspace_id || '450bf196-431f-463f-9316-2d1ce1da98db' }}
+  LH_NAME: ${{ github.event.inputs.lakehouse || 'aemo' }}
+  LH_LANDING: ${{ github.event.inputs.lakehouse_landing || 'aemo_landing' }}
+  FOLDER: ${{ github.event.inputs.folder || 'FabricIQ' }}
   # CI's own dbt run only — deliberately smaller than the limit deploy.py injects into the
   # variable library for the in-Fabric notebook run. Caps NEW downloads per run; there is no
   # process limit any more (every model rebuilds from the full archive).
@@ -91,12 +107,11 @@ jobs:
           names = [l["displayName"] for l in ws.list_lakehouses()]
           existed = lh_name in names
           lh_id = ws.create_lakehouse(lh_name, folder=os.environ["FOLDER"])   # idempotent, schema-enabled
-          # The landing lakehouse is NOT created here: it holds the downloaded AEMO archive and
-          # outlives every run. Failing loudly beats silently provisioning an empty one and then
-          # re-downloading eight years of CSVs into it.
-          if landing not in names:
-              raise SystemExit(f"landing lakehouse '{landing}' not found in {names}")
-          landing_id = next(l["id"] for l in ws.list_lakehouses() if l["displayName"] == landing)
+          # The landing lakehouse is created too (idempotent): a fresh workspace starts with
+          # an EMPTY archive and stg_csv_archive_log bootstraps it from scratch, downloading
+          # download_limit files per source per run. Any pre-existing archive elsewhere is a
+          # different deployment target and stays untouched.
+          landing_id = ws.create_lakehouse(landing, folder=os.environ["FOLDER"])
           # BOTH paths are full abfss URLs. duckrun would expand the OneLake shorthand
           # `<workspace>/<item>.Lakehouse` for the Tables root, but RemoteRunner rejects it —
           # it needs the URL to locate the workspace and lakehouse to run the notebook against.

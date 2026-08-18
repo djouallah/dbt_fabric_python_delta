@@ -16,6 +16,7 @@
 
 import base64
 import json
+import os
 import sys
 import time
 
@@ -23,10 +24,10 @@ import requests
 from duckrun.auth import get_fabric_token
 
 # No lakehouse connection: nothing here reads the data any more (see the note above session).
-WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
+WORKSPACE = os.environ.get("WS_ID", "450bf196-431f-463f-9316-2d1ce1da98db")  # sqlengines
 ONTOLOGY  = "aemo_nem"
 AGENT     = "aemo_nem_agent"
-FOLDER    = "aemo"   # workspace folder the agent lives in
+FOLDER    = os.environ.get("FOLDER", "FabricIQ")   # workspace folder the agent lives in
 API       = "https://api.fabric.microsoft.com/v1"
 
 # The documented datasource type enum is lakehouse_tables | lakehouse | data_warehouse |
