@@ -473,15 +473,20 @@ documented OperationsAgentV1 format), mirroring `data_agent.py`'s helpers.
 - **The OperationsAgent REST API accepts USER identities only** — service principals and
   managed identities are rejected — so it is NOT in `deploy.py`: CI's OIDC app identity
   cannot call it. Run `python operations_agent.py` from a laptop under `az login`.
-- **BLOCKED 2026-08-18: create answers `403 FeatureNotAvailable` on this tenant**, and that
-  is a rollout gate, not a config gap — measured with every documented prerequisite in
-  place: `EnableAOAI`, both cross-geo AOAI switches and `OntologyPreview` all enabled
-  (via `GET /v1/admin/tenantsettings`), P1 capacity in East US, not a trial. Both the
-  dedicated `POST /operationsAgents` and the core `POST /items` with
+- **BLOCKED 2026-08-18: create answers `403 FeatureNotAvailable`, and the cause is the
+  CAPACITY REGION.** The workspace's P1 sits in **East US — one of exactly two US regions
+  where "Operations agent (preview)" is excluded** per the region-availability table
+  (the other is South Central US, which also lacks Ontology); see
+  https://learn.microsoft.com/fabric/admin/region-availability. Tenant config was
+  eliminated first and is NOT the problem: `EnableAOAI`, both cross-geo AOAI switches and
+  `OntologyPreview` all enabled, not a trial, and no disabled tenant setting mentions the
+  item type. Both the dedicated `POST /operationsAgents` and the core `POST /items` with
   `type: "OperationsAgent"` return the same 403, while `GET /operationsAgents` returns
-  `200 []`. No disabled tenant setting mentions the item type (the only one naming
-  Operations Agents is the optional Agent 365 observability hook). When the portal's
-  "+ New item" starts offering "Operations agent", re-run the script unchanged.
+  `200 []`. The tenant's **West Europe P1 (`CAT_Premium_Europe`) has no feature
+  exclusions**, so the untested-but-schema-supported path is an agent in a small West
+  Europe workspace whose `dataSources` entry points cross-workspace at this ontology
+  (each dataSource carries its own `workspaceId`). Re-run the script unchanged if the
+  East US exclusion ever lifts.
 - The *other* operational route — **Rules on ontology entity types (Activator-backed)** —
   was considered and dropped: it requires at least one **TimeSeries-bound property**
   (our v5 ontology has none, by design — see the v3 dead end) and rules are authored

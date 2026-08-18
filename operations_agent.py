@@ -11,13 +11,14 @@
 #     python operations_agent.py            # create-or-update, started
 #     python operations_agent.py --dump     # print the stored definition, decoded
 #
-# STATUS 2026-08-18: create answers 403 FeatureNotAvailable on this tenant — with every
-# documented prerequisite verified in place (EnableAOAI, both cross-geo AOAI switches,
-# OntologyPreview all on; P1 capacity in East US, not a trial). Both the dedicated
-# /operationsAgents create AND the core /items create with type=OperationsAgent 403,
-# while GET /operationsAgents returns 200 [] — a staged preview rollout gate, not a
-# config problem. Re-run this script unchanged once "+ New item" in the portal offers
-# "Operations agent"; nothing here depends on the gate.
+# STATUS 2026-08-18: create answers 403 FeatureNotAvailable, and the cause is the CAPACITY
+# REGION — the workspace's P1 is in East US, one of exactly two US regions where
+# "Operations agent (preview)" is excluded (learn.microsoft.com/fabric/admin/
+# region-availability). Tenant settings were eliminated first and are all correctly on.
+# The tenant's West Europe P1 has no exclusions; an agent in a West Europe workspace
+# pointing its dataSources entry cross-workspace at this ontology is the schema-supported
+# escape hatch (each dataSource carries its own workspaceId). Re-run unchanged if the
+# East US exclusion lifts.
 #
 # The definition is ONE part, Configurations.json (the documented OperationsAgentV1 format):
 # {configuration: {instructions, dataSources, actions, messageDestination?}, playbook,
