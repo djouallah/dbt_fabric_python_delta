@@ -271,6 +271,14 @@ schema map and the `u.RegionID` filters in `gql.py`/`shutdown.py` all changed in
   which splits a question into GQL for structure + KQL for observations). So GQL alone
   can never aggregate a measure that lives in a time series — a graph-side MWh answer
   requires either an aggregate entity (the UnitDay pattern) or cross-engine routing.
+  Re-verified 2026-08-18 on the current service with a throwaway `ts_probe` ontology:
+  a **lakehouse** Delta table IS an accepted TimeSeries source (the docs say "OneLake or
+  an eventhouse" — RTI is not required). The binding deploys, `getDefinition` echoes it
+  back as `TimeSeries`/`SETTLEMENTDATE`, the graph refresh Completes and static
+  properties query fine — but `u.InitialMW` still fails with 42000 "Property 'InitialMW'
+  does not exist in type (:TsUnit)". The timestamp column must be a real
+  timestamp/datetime (TIMESTAMPTZ → delta `timestamp` works; the split DateKey+TimeHHMM
+  pair cannot be selected), and per the type map a delta `timestamp_ntz` binds as String.
 - **A leaf-grain fact table CAN live in the graph** (the v4 result, still the basis for
   `Observation` in `ontology.py`)**:**
   11.28M Observation nodes (one per fct_summary row, three-part composite key
