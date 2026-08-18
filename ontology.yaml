@@ -111,6 +111,11 @@ entities:
       NetInterchange:         [NetInterchange,         Double]
       AvailableGeneration:    [AvailableGeneration,    Double]
       DispatchableGeneration: [DispatchableGeneration, Double]
+      # Operational signals for the Operations Agent's rules: LorSurplus < 0 is a Lack Of
+      # Reserve breach, MarketSuspendedFlag != 0 a market suspension. DOUBLE in fct_region
+      # like every mart measure (flags included), for the DECIMAL->String binding trap.
+      LorSurplus:             [LorSurplus,             Double]
+      MarketSuspendedFlag:    [MarketSuspendedFlag,    Double]
 
   # NEW in v5. Power moving between regions, full history. Region-PAIR grain: QNI and
   # Terranora share the QLD1-NSW1 corridor and cannot be separated from net injections.

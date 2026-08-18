@@ -127,6 +127,12 @@ jobs:
       - name: ✅ Phase 3 — dbt test
         run: python run_dbt.py test
 
+      - name: 🔁 Phase 3.5 — Refresh ontology graph
+        # Data changes do NOT auto-refresh the graph model the Operations Agent monitors —
+        # only schema changes do. The script is tolerant by design (no graph deployed, or a
+        # refresh already in flight, both exit 0) so it can never fail a data load.
+        run: python refresh_graph.py
+
       - name: 📚 Phase 4 — dbt docs generate
         # Always local: docs is a catalog query, not a build, and Pages publishes the local
         # target/ directory that only a local run produces.

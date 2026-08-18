@@ -67,7 +67,8 @@ Entity types and their properties:
   One row per UNIT per 5-minute interval. ~11.9 million nodes.
 - RegionInterval(RegionID: String, DateKey: BigInt, TimeHHMM: BigInt -- these three together
   are the key; Price: Double, TotalDemand: Double, NetInterchange: Double,
-  AvailableGeneration: Double, DispatchableGeneration: Double)
+  AvailableGeneration: Double, DispatchableGeneration: Double, LorSurplus: Double,
+  MarketSuspendedFlag: Double)
   One row per REGION per 5-minute interval. ~373 thousand nodes.
 - Flow(LinkID: String, DateKey: BigInt, TimeHHMM: BigInt -- these three together are the key;
   LinkName: String, FromRegionID: String, ToRegionID: String, FlowMW: Double,
@@ -223,6 +224,9 @@ question allows -- they are faster and far less error-prone.
   Getting this backwards inverts every trade answer.
 - AvailableGeneration is the capacity generators OFFERED for that interval. Spare capacity
   ("reserve", "headroom") is AvailableGeneration - TotalDemand, from RegionInterval.
+- LorSurplus below 0 is a Lack Of Reserve (LOR) condition -- the region's reserve margin
+  was breached that interval. MarketSuspendedFlag is non-zero while the spot market in the
+  region is suspended. Both live on RegionInterval.
 - Flow.FlowMW is positive in the FromRegionID -> ToRegionID direction and negative the other
   way. LinkID 'TAS1-VIC1' with FlowMW = -300 means 300 MW flowing VIC1 -> TAS1.
   Flow is region-PAIR grain: 'QLD1-NSW1' covers QNI and Terranora together and they cannot
