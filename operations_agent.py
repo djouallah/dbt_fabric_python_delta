@@ -11,6 +11,14 @@
 #     python operations_agent.py            # create-or-update, started
 #     python operations_agent.py --dump     # print the stored definition, decoded
 #
+# STATUS 2026-08-18: create answers 403 FeatureNotAvailable on this tenant — with every
+# documented prerequisite verified in place (EnableAOAI, both cross-geo AOAI switches,
+# OntologyPreview all on; P1 capacity in East US, not a trial). Both the dedicated
+# /operationsAgents create AND the core /items create with type=OperationsAgent 403,
+# while GET /operationsAgents returns 200 [] — a staged preview rollout gate, not a
+# config problem. Re-run this script unchanged once "+ New item" in the portal offers
+# "Operations agent"; nothing here depends on the gate.
+#
 # The definition is ONE part, Configurations.json (the documented OperationsAgentV1 format):
 # {configuration: {instructions, dataSources, actions, messageDestination?}, playbook,
 # shouldRun}. playbook is sent as {} -- the service generates it from the instructions.

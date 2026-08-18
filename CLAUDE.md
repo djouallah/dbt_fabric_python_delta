@@ -414,7 +414,13 @@ schema map and the `u.RegionID` filters in `gql.py`/`shutdown.py` all changed in
 - **Changed data needs an explicit graph refresh; only schema changes auto-refresh.**
   `POST /v1/workspaces/{ws}/items/{graphId}/jobs/instances?jobType=RefreshGraph`
   (the job type is undocumented — `Refresh`/`GraphRefresh` return `InvalidJobType`).
-  `ontology.py` fires it on every run; it takes a couple of minutes to land.
+  `ontology.py` fires it on every run; it takes a couple of minutes to land. Since the
+  Operations Agent work, **every data load fires it too**: CI Phase 3.5 runs
+  `refresh_graph.py` and the `run` notebook's last cell inlines the same call (only the dbt
+  project lives on the lakehouse, so the notebook can't import the script). Both are
+  deliberately tolerant — no graph deployed, or a refresh already in flight, print and
+  carry on — because a graph hiccup must never fail a data load. Double-firing on a
+  `deploy=full` run (ontology.py refreshes too) is harmless for the same reason.
 - **Interconnector is a graph NODE, so a region-to-region hop is two edges** — and GQL
   rejects a quantified pattern spanning it ("Parenthesized path pattern expressions must
   be formed of exactly one edge pattern in between two node patterns"). `shutdown.py`
@@ -454,6 +460,41 @@ schema map and the `u.RegionID` filters in `gql.py`/`shutdown.py` all changed in
   appears, so a newly added column would stay NULL forever on the existing rows. It
   therefore also runs a `DESCRIBE` against `{{ this }}` and forces a full rebuild once
   when the column is absent. Extend that probe's column name when adding the next one.
+
+## Operational ontology — the Operations Agent (`operations_agent.py`, gated on rollout)
+
+The operational answer to "the analytical ontology adds little": a **Fabric Operations
+Agent** grounded on `aemo_nem`. It compiles NL instructions into a playbook of rules,
+evaluates each rule's graph query every ~5 minutes, Teams-messages the creator when one
+fires, and carries a `FabricJobAction` that runs `run_pipeline` on approval from the Teams
+card. `operations_agent.py` deploys it code-first (single `Configurations.json` part, the
+documented OperationsAgentV1 format), mirroring `data_agent.py`'s helpers.
+
+- **The OperationsAgent REST API accepts USER identities only** — service principals and
+  managed identities are rejected — so it is NOT in `deploy.py`: CI's OIDC app identity
+  cannot call it. Run `python operations_agent.py` from a laptop under `az login`.
+- **BLOCKED 2026-08-18: create answers `403 FeatureNotAvailable` on this tenant**, and that
+  is a rollout gate, not a config gap — measured with every documented prerequisite in
+  place: `EnableAOAI`, both cross-geo AOAI switches and `OntologyPreview` all enabled
+  (via `GET /v1/admin/tenantsettings`), P1 capacity in East US, not a trial. Both the
+  dedicated `POST /operationsAgents` and the core `POST /items` with
+  `type: "OperationsAgent"` return the same 403, while `GET /operationsAgents` returns
+  `200 []`. No disabled tenant setting mentions the item type (the only one naming
+  Operations Agents is the optional Agent 365 observability hook). When the portal's
+  "+ New item" starts offering "Operations agent", re-run the script unchanged.
+- The *other* operational route — **Rules on ontology entity types (Activator-backed)** —
+  was considered and dropped: it requires at least one **TimeSeries-bound property**
+  (our v5 ontology has none, by design — see the v3 dead end) and rules are authored
+  portal-only, saved into an Activator item.
+- `RegionInterval` carries **`LorSurplus`** (< 0 = Lack Of Reserve breach) and
+  **`MarketSuspendedFlag`** (≠ 0 = market suspended) since this work — the two genuine
+  operational signals, already `DOUBLE` in `fct_region`. The additive edit's `--check`
+  signature was 2 CHANGED (RegionInterval definition + data binding), 0 added, 0 removed.
+- Still unverified, because creation is gated: whether `shouldRun: true` auto-generates
+  the playbook (the portal flow is save → Generate playbook → Start, so expect one portal
+  visit on first create), whether `"Ontology"` survives as the stored dataSource type, and
+  the Teams approve→run loop. The script echoes the stored definition back after every
+  deploy precisely so those bets become visible on first contact.
 
 ## Running a deployed item on Fabric
 
