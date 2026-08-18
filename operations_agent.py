@@ -1,9 +1,25 @@
 # aemo_nem_ops: a Fabric Operations Agent grounded on the aemo_nem Ontology -- the
-# OPERATIONAL side of the ontology. The service compiles INSTRUCTIONS below into a playbook
+# OPERATIONAL side of the ontology. The service compiles the instructions into a playbook
 # of rules, evaluates each rule's graph query every ~5 minutes, and messages the creator in
-# Teams when one fires. The RefreshAemoData action lets a recipient approve a run of the
-# run_pipeline Data Pipeline straight from the Teams card (the agent acts on behalf of its
-# CREATOR, via OBO -- approving is not the same as running it yourself).
+# Teams when one fires.
+#
+# ============================ FINAL VERDICT 2026-08-18 =============================
+# THE AGENT MUST BE CREATED AND MANAGED IN THE PORTAL. The public definition API and the
+# portal experience are two DISCONNECTED stores in this preview:
+#   - An agent created here, with a schema-valid definition the echo confirmed stored,
+#     answers 400 "Unable to start playbook generation" in the portal -- the generator
+#     reads an internal store where the agent is blank and unprovisioned (the portal
+#     create flow also provisions the Entra Agent ID; this API does not).
+#   - The reverse proof: a PORTAL-created agent that generates playbooks fine dumps an
+#     EMPTY public definition (instructions "", dataSources {}, shouldRun false). The
+#     portal neither reads nor writes the public parts.
+# So the advertised CI/CD path is not wired up yet. This script's remaining jobs:
+#   python operations_agent.py --dump [name]   # inspect any agent's public definition
+#   INSTRUCTIONS below                          # the version-controlled text to PASTE
+#                                               # into the portal agent's instructions
+# The deploy path is kept for when Microsoft connects the two sides, but it is gated
+# behind --force-deploy because today it produces an agent the portal cannot use.
+# ===================================================================================
 #
 # NOT wired into deploy.py, deliberately: the OperationsAgent REST API accepts USER
 # identities only -- service principals and managed identities are rejected -- so CI's OIDC
@@ -176,6 +192,14 @@ if "--dump" in sys.argv:
         print(p["path"])
         print(base64.b64decode(p["payload"]).decode())
     raise SystemExit(0)
+
+if "--force-deploy" not in sys.argv:
+    raise SystemExit(
+        "Refusing to deploy: the OperationsAgent public definition API is disconnected "
+        "from the portal experience (see the header) — an agent created here cannot "
+        "generate a playbook. Create/manage the agent in the portal and paste "
+        "INSTRUCTIONS from this file. Use --dump to inspect, or --force-deploy to "
+        "override once Microsoft wires the two sides together.")
 
 ontologies = call("GET", f"{API}/workspaces/{WORKSPACE}/ontologies").json()["value"]
 ontology = next((o for o in ontologies if o["displayName"] == ONTOLOGY), None)

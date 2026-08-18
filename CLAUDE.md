@@ -504,8 +504,21 @@ A **cross-workspace ontology dataSource also works** (each `dataSources` entry c
 own `workspaceId`) — that ran for a while before plan B; co-location just removes the
 unproven cross-REGION agent→graph hop.
 
+**FINAL VERDICT: the agent must be created and managed IN THE PORTAL.** The public
+definition API and the portal experience are two disconnected stores in this preview.
+An agent created via the API — schema-valid definition, stored and echoed back — answers
+**400 "Unable to start playbook generation"** in the portal: the generator reads an
+internal store where the agent is blank and unprovisioned (portal creation also provisions
+the Entra Agent ID; the API does not). The reverse proof nailed it: a **portal-created
+agent that generates playbooks fine dumps an EMPTY public definition** (instructions `""`,
+dataSources `{}`, `shouldRun: false`). The advertised CI/CD path is not wired up yet.
+`operations_agent.py` is therefore demoted: `--dump` for inspection and the
+version-controlled `INSTRUCTIONS` text to paste into the portal; its deploy path is gated
+behind `--force-deploy` until Microsoft connects the two sides.
+
 Everything below was measured against the live service on 2026-08-18, and the live service
-disagrees with the docs article on several points:
+disagrees with the docs article on several points (all still true, just moot for authoring
+until the stores are connected):
 
 - **USER identities only** — the API rejects service principals, so the script is NOT in
   `deploy.py` (CI's OIDC identity cannot call it). Run `python operations_agent.py` from a
@@ -544,8 +557,19 @@ ontology has none, by design — see the v3 dead end) and rules are authored por
 operational signals, already `DOUBLE` in `fct_region`. The additive edit's `--check`
 signature was 2 CHANGED (RegionInterval definition + data binding), 0 added, 0 removed.
 
-Still unverified (needs the portal start + the "Fabric Operations Agent" Teams app): the
-playbook compiling sensible rules from the instructions, and alerts actually arriving.
+Playbook generation is verified working on the portal-created agent (created as
+`OperationsAgent_1` — rename in the portal at will; agent items are not hash-identified,
+unlike ontology types). Still unverified: alerts actually arriving in Teams once the agent
+runs against live rule evaluations.
+
+**The ontology's MCP server surface is verified healthy** (probed 2026-08-18, both
+workspaces): endpoint
+`{API}/v1/mcp/dataPlane/workspaces/{ws}/items/{ontologyId}/ontologyEndpoint`, initialize →
+200, tools are `list_ontology_entity_types` and `search_ontology`, and the list call
+returns all 8 entity types. A client error naming tools like `List-EntityTypes` /
+`Search-EntitySchema` / `Get-EntityType` is NOT this server's toolset — that's some
+consumer's own wrapper (the ops-agent copilot or Copilot Studio) failing on its side;
+retry, or detach and re-add the ontology knowledge source, before suspecting the ontology.
 
 ## Running a deployed item on Fabric
 
