@@ -562,14 +562,22 @@ Playbook generation is verified working on the portal-created agent (created as
 unlike ontology types). Still unverified: alerts actually arriving in Teams once the agent
 runs against live rule evaluations.
 
-**The ontology's MCP server surface is verified healthy** (probed 2026-08-18, both
-workspaces): endpoint
-`{API}/v1/mcp/dataPlane/workspaces/{ws}/items/{ontologyId}/ontologyEndpoint`, initialize →
-200, tools are `list_ontology_entity_types` and `search_ontology`, and the list call
-returns all 8 entity types. A client error naming tools like `List-EntityTypes` /
-`Search-EntitySchema` / `Get-EntityType` is NOT this server's toolset — that's some
-consumer's own wrapper (the ops-agent copilot or Copilot Studio) failing on its side;
-retry, or detach and re-add the ontology knowledge source, before suspecting the ontology.
+**The ontology's PUBLIC MCP surface is healthy, but the one the playbook generator needs
+does not exist — and that is the terminal blocker for an ontology-grounded ops agent
+today (2026-08-18).** Two different MCP endpoints are in play:
+
+- `{API}/v1/mcp/dataPlane/workspaces/{ws}/items/{ontologyId}/ontologyEndpoint` — the
+  documented public surface. Verified working in BOTH workspaces: initialize → 200, tools
+  `list_ontology_entity_types` / `search_ontology`, list call returns all 8 entity types.
+- `…/items/{id}/ontologyExploreOpsAgent` — the surface the ops agent's playbook generator
+  actually uses (tools `List-EntityTypes`, `Search-EntitySchema`, `Add-OntologyGrounding*`,
+  `Add-Conjecture*`, per its own error trace). **404 `EntityNotFound` (JSON-RPC -32601) on
+  every variant probed**: new ontology (West Europe), old ontology (East US), and the
+  agent item. The generator's dependency has not shipped server-side; the client code
+  references it already. Nothing in our deployment causes this and nothing configurable
+  fixes it — the agent reports "no grounded conjectures can be constructed" and generates
+  no playbook. Re-probe `ontologyExploreOpsAgent` before re-testing the ops agent; when it
+  stops 404ing, Generate playbook should start working.
 
 ## Running a deployed item on Fabric
 
