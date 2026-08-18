@@ -11,22 +11,45 @@
 #     python operations_agent.py            # create-or-update, started
 #     python operations_agent.py --dump     # print the stored definition, decoded
 #
-# STATUS 2026-08-18: create answers 403 FeatureNotAvailable, and the cause is the CAPACITY
-# REGION — the workspace's P1 is in East US, one of exactly two US regions where
-# "Operations agent (preview)" is excluded (learn.microsoft.com/fabric/admin/
-# region-availability). Tenant settings were eliminated first and are all correctly on.
-# The tenant's West Europe P1 has no exclusions; an agent in a West Europe workspace
-# pointing its dataSources entry cross-workspace at this ontology is the schema-supported
-# escape hatch (each dataSource carries its own workspaceId). Re-run unchanged if the
-# East US exclusion lifts.
+# THE AGENT LIVES IN A DIFFERENT WORKSPACE THAN THE ONTOLOGY, on purpose. analytics_as_code
+# sits on a P1 in East US — one of exactly two US regions where "Operations agent (preview)"
+# is excluded (learn.microsoft.com/fabric/admin/region-availability), so creating the agent
+# there answers 403 FeatureNotAvailable (tenant settings were eliminated first; all on).
+# The definition schema is built for the split: each dataSources entry and the action's
+# connection carry their own workspaceId, so the agent binds the ontology and runs the
+# pipeline cross-workspace. Set AGENT_WORKSPACE to any workspace on a capacity whose region
+# has no exclusion; collapse it back into WORKSPACE if the East US exclusion ever lifts.
 #
-# The definition is ONE part, Configurations.json (the documented OperationsAgentV1 format):
-# {configuration: {instructions, dataSources, actions, messageDestination?}, playbook,
-# shouldRun}. playbook is sent as {} -- the service generates it from the instructions.
+# The definition is ONE part, Configurations.json -- MEASURED against the live service,
+# which differs from the docs article in three ways (all verified 2026-08-18 by pushing
+# incremental definitions at a bare agent and reading its stored skeleton back):
+#   - the part carries a "$schema" field (developer.microsoft.com/json-schemas/fabric/
+#     item/operationsAgents/definition/1.0.0/schema.json);
+#   - there is NO "playbook" key, despite the article calling it required -- the service's
+#     own skeleton omits it and every successful push here omitted it;
+#   - a FabricJobAction ALWAYS fails with 400 UnknownError through this API path -- every
+#     schema-valid variant (same-workspace and cross-, Pipeline and RunNotebook, with and
+#     without parameters), while a PowerAutomateAction in the same slot returns 200. The
+#     job action needs registration the definition-import path evidently can't do yet, so
+#     INCLUDE_JOB_ACTION below stays False and the agent ships Teams-alert-only (the
+#     default Teams DM to the creator needs no action config at all).
+# The CROSS-WORKSPACE ontology dataSource WORKS: agent in one workspace, ontology in
+# another, accepted with a plain workspaceId on the dataSources entry.
+# Three more measured behaviours:
+#   - getDefinition SCRUBS GUIDs on read: the stored dataSource id and .platform logicalId
+#     echo back as 00000000-... . The write DID validate and store the real id (pushing the
+#     zeros back fails with 404 EntityNotFound, which proves ids resolve on write). So the
+#     zeroed echo is fine, and a --dump is NOT round-trippable -- always deploy from this
+#     script, never from a dump.
+#   - "shouldRun": true is COERCED TO FALSE on import. Starting the agent needs its
+#     playbook, and generating that is a portal operation: open the agent, Generate
+#     playbook, review, Start. One-time, and again after instruction changes if the
+#     playbook should follow them.
+#   - PATCH /operationsAgents/{id} updates displayName/description normally.
 # messageDestination is omitted -> Teams DM to the creator (needs the "Fabric Operations
-# Agent" Teams app installed). Prereqs beyond that are tenant-level: the operations agent
-# preview switch, Copilot, Azure OpenAI, and cross-geo AI processing when the capacity is
-# not in a US/EU region. Trial capacities are not supported.
+# Agent" Teams app installed). If an action is ever added in the PORTAL, --dump and merge
+# it here BEFORE re-running this script -- updateDefinition replaces the whole definition
+# and would silently wipe it.
 
 import base64
 import json
@@ -37,12 +60,19 @@ import uuid
 import requests
 from duckrun.auth import get_fabric_token
 
-WORKSPACE = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code
+WORKSPACE       = "91588e42-0f1c-4e56-bcaa-cbf015b8f312"  # analytics_as_code: ontology + pipeline
+AGENT_WORKSPACE = "450bf196-431f-463f-9316-2d1ce1da98db"  # where the agent item is created
 ONTOLOGY  = "aemo_nem"
 AGENT     = "aemo_nem_ops"
-PIPELINE  = "run_pipeline"   # the FabricJobAction target
-FOLDER    = "aemo"           # workspace folder the agent lives in
+PIPELINE  = "run_pipeline"   # the FabricJobAction target, when the flag below turns on
+FOLDER    = "aemo"           # folder for the agent, IF the agent workspace has one
 API       = "https://api.fabric.microsoft.com/v1"
+SCHEMA    = ("https://developer.microsoft.com/json-schemas/fabric/item/operationsAgents/"
+             "definition/1.0.0/schema.json")
+
+# Flip to True and re-run once Fabric's definition path stops 400ing on FabricJobAction
+# (re-test occasionally; it is a service-side gap, not a payload problem -- see header).
+INCLUDE_JOB_ACTION = False
 
 # dataSources/actions entries carry GUID ids. Minting them from names keeps re-runs from
 # rewriting identity on every updateDefinition -- the same reason ontology.py hashes names.
@@ -74,8 +104,8 @@ Watch the latest data for these conditions:
 4. Market suspension: any region with MarketSuspendedFlag not equal to 0.
 5. Basslink at its limit: LinkID 'TAS1-VIC1' with FlowMW above 470 or below -470 (the link
    is rated 478 MW).
-6. Stale data: if the latest interval is more than 13 hours old, recommend the
-   RefreshAemoData action to pull the latest AEMO files.
+6. Stale data: if the latest interval is more than 13 hours old, alert that the feed is
+   stale -- the pipeline normally lands new data roughly every 12 hours.
 
 In every alert, state the region or link, the DateKey and TimeHHMM of the triggering
 interval, and the measured value.
@@ -106,7 +136,7 @@ def part(path, obj):
 
 def find_agent(name):
     return next((a for a in
-                 call("GET", f"{API}/workspaces/{WORKSPACE}/operationsAgents").json()["value"]
+                 call("GET", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents").json()["value"]
                  if a["displayName"] == name), None)
 
 
@@ -114,7 +144,7 @@ def get_definition(agent_id):
     """getDefinition is an LRO whose payload lives at {Location}/result, not in the
     operation-status body that call() would hand back."""
     resp = session.post(
-        f"{API}/workspaces/{WORKSPACE}/operationsAgents/{agent_id}/getDefinition")
+        f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents/{agent_id}/getDefinition")
     if resp.status_code == 202 and resp.headers.get("Location"):
         location = resp.headers["Location"]
         while True:
@@ -138,7 +168,7 @@ if "--dump" in sys.argv:
     found = find_agent(target)
     if not found:
         names = [a["displayName"] for a in
-                 call("GET", f"{API}/workspaces/{WORKSPACE}/operationsAgents").json()["value"]]
+                 call("GET", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents").json()["value"]]
         raise SystemExit(f"No operations agent named '{target}'. Found: {names}")
     print(f"{target} ({found['id']})\n")
     for p in get_definition(found["id"]):
@@ -153,35 +183,38 @@ if not ontology:
     raise SystemExit(f"No ontology named '{ONTOLOGY}' in the workspace — run ontology.py "
                      f"first. Found: {[o['displayName'] for o in ontologies] or 'none'}")
 
-# The pipeline shows up in the plain item list (unlike Ontology/GraphModel/DataAgent).
-pipelines = call("GET", f"{API}/workspaces/{WORKSPACE}/items?type=DataPipeline").json()["value"]
-pipeline = next((p for p in pipelines if p["displayName"] == PIPELINE), None)
-if not pipeline:
-    raise SystemExit(f"No data pipeline named '{PIPELINE}' — deploy the Fabric items first "
-                     f"(deploy=no_model). Found: {[p['displayName'] for p in pipelines] or 'none'}")
+actions = {}
+if INCLUDE_JOB_ACTION:
+    # The pipeline shows up in the plain item list (unlike Ontology/GraphModel/DataAgent).
+    pipelines = call("GET", f"{API}/workspaces/{WORKSPACE}/items?type=DataPipeline").json()["value"]
+    pipeline = next((p for p in pipelines if p["displayName"] == PIPELINE), None)
+    if not pipeline:
+        raise SystemExit(f"No data pipeline named '{PIPELINE}' — deploy the Fabric items "
+                         f"first (deploy=no_model). "
+                         f"Found: {[p['displayName'] for p in pipelines] or 'none'}")
+    actions["refreshAemoData"] = {
+        "id": str(uuid.uuid5(NS, "action/refreshAemoData")),
+        "kind": "FabricJobAction",
+        "displayName": "RefreshAemoData",
+        "description": "Run the run_pipeline data pipeline to download the latest "
+                       "AEMO files and rebuild the mart tables",
+        "connection": {"jobArtifactId": pipeline["id"],
+                       "jobWorkspaceId": WORKSPACE,
+                       "itemType": "DataPipeline",
+                       "jobType": "Pipeline"},
+    }
 
+# No "playbook" key: the service's own skeleton has none and pushes that include one fail
+# once the definition is non-trivial. messageDestination omitted -> Teams DM to the creator.
 parts = [part("Configurations.json", {
+    "$schema": SCHEMA,
     "configuration": {
         "instructions": INSTRUCTIONS,
         "dataSources": {
             "aemo": {"id": ontology["id"], "type": "Ontology", "workspaceId": WORKSPACE},
         },
-        "actions": {
-            "refreshAemoData": {
-                "id": str(uuid.uuid5(NS, "action/refreshAemoData")),
-                "kind": "FabricJobAction",
-                "displayName": "RefreshAemoData",
-                "description": "Run the run_pipeline data pipeline to download the latest "
-                               "AEMO files and rebuild the mart tables",
-                "connection": {"jobArtifactId": pipeline["id"],
-                               "jobWorkspaceId": WORKSPACE,
-                               "itemType": "DataPipeline",
-                               "jobType": "Pipeline"},
-            },
-        },
-        # messageDestination omitted -> Teams DM to the creator.
+        "actions": actions,
     },
-    "playbook": {},
     "shouldRun": True,
 })]
 
@@ -190,14 +223,14 @@ existing = find_agent(AGENT)
 if existing:
     agent_id = existing["id"]
     # No ?updateMetadata=true: no .platform part is sent, same as the data agent.
-    call("POST", f"{API}/workspaces/{WORKSPACE}/operationsAgents/{agent_id}/updateDefinition",
+    call("POST", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents/{agent_id}/updateDefinition",
          json={"definition": {"parts": parts}})
     print(f"Updated operations agent '{AGENT}' ({agent_id})")
 else:
     folder_id = next((f["id"] for f in
-                      call("GET", f"{API}/workspaces/{WORKSPACE}/folders").json()["value"]
+                      call("GET", f"{API}/workspaces/{AGENT_WORKSPACE}/folders").json()["value"]
                       if f["displayName"] == FOLDER), None)
-    created = call("POST", f"{API}/workspaces/{WORKSPACE}/operationsAgents", json={
+    created = call("POST", f"{API}/workspaces/{AGENT_WORKSPACE}/operationsAgents", json={
         "displayName": AGENT,
         "description": f"Operational monitoring of the NEM grounded on the {ONTOLOGY} ontology",
         "folderId": folder_id,
@@ -207,7 +240,7 @@ else:
     print(f"Created operations agent '{AGENT}' ({agent_id})")
     # folderId on create is not honoured by every preview item type, so assert placement.
     if folder_id:
-        moved = session.post(f"{API}/workspaces/{WORKSPACE}/items/{agent_id}/move",
+        moved = session.post(f"{API}/workspaces/{AGENT_WORKSPACE}/items/{agent_id}/move",
                              json={"targetFolderId": folder_id})
         print(f"  agent -> folder '{FOLDER}'" if moved.ok
               else f"  agent move -> {moved.status_code}: {moved.text[:160]}")

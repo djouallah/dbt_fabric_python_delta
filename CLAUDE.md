@@ -470,36 +470,56 @@ fires, and carries a `FabricJobAction` that runs `run_pipeline` on approval from
 card. `operations_agent.py` deploys it code-first (single `Configurations.json` part, the
 documented OperationsAgentV1 format), mirroring `data_agent.py`'s helpers.
 
-- **The OperationsAgent REST API accepts USER identities only** — service principals and
-  managed identities are rejected — so it is NOT in `deploy.py`: CI's OIDC app identity
-  cannot call it. Run `python operations_agent.py` from a laptop under `az login`.
-- **BLOCKED 2026-08-18: create answers `403 FeatureNotAvailable`, and the cause is the
-  CAPACITY REGION.** The workspace's P1 sits in **East US — one of exactly two US regions
-  where "Operations agent (preview)" is excluded** per the region-availability table
-  (the other is South Central US, which also lacks Ontology); see
-  https://learn.microsoft.com/fabric/admin/region-availability. Tenant config was
-  eliminated first and is NOT the problem: `EnableAOAI`, both cross-geo AOAI switches and
-  `OntologyPreview` all enabled, not a trial, and no disabled tenant setting mentions the
-  item type. Both the dedicated `POST /operationsAgents` and the core `POST /items` with
-  `type: "OperationsAgent"` return the same 403, while `GET /operationsAgents` returns
-  `200 []`. The tenant's **West Europe P1 (`CAT_Premium_Europe`) has no feature
-  exclusions**, so the untested-but-schema-supported path is an agent in a small West
-  Europe workspace whose `dataSources` entry points cross-workspace at this ontology
-  (each dataSource carries its own `workspaceId`). Re-run the script unchanged if the
-  East US exclusion ever lifts.
-- The *other* operational route — **Rules on ontology entity types (Activator-backed)** —
-  was considered and dropped: it requires at least one **TimeSeries-bound property**
-  (our v5 ontology has none, by design — see the v3 dead end) and rules are authored
-  portal-only, saved into an Activator item.
-- `RegionInterval` carries **`LorSurplus`** (< 0 = Lack Of Reserve breach) and
-  **`MarketSuspendedFlag`** (≠ 0 = market suspended) since this work — the two genuine
-  operational signals, already `DOUBLE` in `fct_region`. The additive edit's `--check`
-  signature was 2 CHANGED (RegionInterval definition + data binding), 0 added, 0 removed.
-- Still unverified, because creation is gated: whether `shouldRun: true` auto-generates
-  the playbook (the portal flow is save → Generate playbook → Start, so expect one portal
-  visit on first create), whether `"Ontology"` survives as the stored dataSource type, and
-  the Teams approve→run loop. The script echoes the stored definition back after every
-  deploy precisely so those bets become visible on first contact.
+**The agent is DEPLOYED — as `aemo_nem_ops` (3163c95c-93b3-4a55-9b62-dc239ae1be68) in the
+`sqlengines` workspace (450bf196-431f-463f-9316-2d1ce1da98db), NOT alongside the ontology.**
+That split is forced and load-bearing: `analytics_as_code` sits on a P1 in **East US — one
+of exactly two US regions where "Operations agent (preview)" is excluded** (the other is
+South Central US; https://learn.microsoft.com/fabric/admin/region-availability), so
+creating the agent there answers `403 FeatureNotAvailable`. Tenant config was eliminated
+first and is NOT the problem (`EnableAOAI`, both cross-geo AOAI switches, `OntologyPreview`
+all on; not a trial; no disabled tenant setting mentions the item type). `sqlengines` is on
+West Europe, which has no exclusions — and the **cross-workspace ontology dataSource works**:
+each `dataSources` entry carries its own `workspaceId`.
+
+Everything below was measured against the live service on 2026-08-18, and the live service
+disagrees with the docs article on several points:
+
+- **USER identities only** — the API rejects service principals, so the script is NOT in
+  `deploy.py` (CI's OIDC identity cannot call it). Run `python operations_agent.py` from a
+  laptop under `az login`.
+- **The definition is ONE `Configurations.json` part** carrying a `$schema` field, with
+  **NO `playbook` key** — the article calls playbook required, but the service's own
+  skeleton omits it. (`OperationsAgentV1.json`, the part name in the REST API sample,
+  fails with "Missing artifact content (BlobId)" — i.e. wrong name.)
+- **A `FabricJobAction` ALWAYS fails through the definition path** — 400 `UnknownError`
+  for every schema-valid variant (same- and cross-workspace, Pipeline and RunNotebook,
+  with/without `parameters`), while a `PowerAutomateAction` in the same slot returns 200.
+  Some registration the portal does isn't done by definition import. So the agent ships
+  **Teams-alert-only** (the default DM to the creator needs no action config);
+  `INCLUDE_JOB_ACTION` in the script preserves the run-the-pipeline action for when the
+  path is fixed. An action added in the PORTAL would be **wiped** by the next
+  `updateDefinition` — `--dump` and merge first.
+- **`getDefinition` scrubs GUIDs on read**: the stored dataSource id and `.platform`
+  `logicalId` echo back as `00000000-…`. The write DID validate and store the real id —
+  pushing the zeros back fails with 404 `EntityNotFound`, proving ids resolve on write.
+  A dump is therefore NOT round-trippable; always deploy from the script.
+- **`shouldRun: true` is coerced to false on import.** Starting needs the playbook, and
+  generating it is portal-only: open the agent → **Generate playbook** → review → **Start**
+  (repeat after instruction changes). That is the ONE manual step; everything else is code.
+- Bare create (`POST /operationsAgents` with just displayName) → 201; then
+  `updateDefinition`. `PATCH /operationsAgents/{id}` fixes displayName/description.
+
+The *other* operational route — **Rules on ontology entity types (Activator-backed)** —
+was considered and dropped: it requires at least one **TimeSeries-bound property** (our v5
+ontology has none, by design — see the v3 dead end) and rules are authored portal-only.
+
+`RegionInterval` carries **`LorSurplus`** (< 0 = Lack Of Reserve breach) and
+**`MarketSuspendedFlag`** (≠ 0 = market suspended) since this work — the two genuine
+operational signals, already `DOUBLE` in `fct_region`. The additive edit's `--check`
+signature was 2 CHANGED (RegionInterval definition + data binding), 0 added, 0 removed.
+
+Still unverified (needs the portal start + the "Fabric Operations Agent" Teams app): the
+playbook compiling sensible rules from the instructions, and alerts actually arriving.
 
 ## Running a deployed item on Fabric
 
